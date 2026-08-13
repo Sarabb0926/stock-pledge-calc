@@ -7,7 +7,7 @@ from datetime import datetime, date
 st.set_page_config(page_title="股票質押與實質套利計算器", page_icon="📈", layout="wide")
 
 st.title("📈 股票質押與實質套利計算器")
-st.caption("自動連動實時股價 · 多標的轉投資 · 整戶維持率監控 · 全表格化美化呈現")
+st.caption("自動連動實時股價 · 動態新增轉投資標的 · 整戶維持率監控 · 表格化顯示")
 
 # --- 股價抓取工具函數 ---
 @st.cache_data(ttl=300)
@@ -41,19 +41,19 @@ if "pledges" not in st.session_state:
     st.session_state.pledges = [
         {
             "id": 1,
-            "project_name": "2025/10 0050質押專案",
-            "pledge_code": "0050",
-            "pledge_sheets": 5.0,
-            "pledge_cost": 100000,
-            "loan_amount": 500000,
-            "interest_rate": 3.8,
-            "pledge_date": date(2025, 10, 10),
+            "project_name": "2025質押套利計畫",
+            "pledge_code": "00878",
+            "pledge_sheets": 10.0,
+            "pledge_cost": 111181,
+            "loan_amount": 100000,
+            "interest_rate": 2.28,
+            "pledge_date": date(2025, 9, 5),
             "targets": [
                 {
                     "target_code": "00919",
-                    "target_sheets": 10.0,
-                    "target_cost": 230000,
-                    "dividends_received": 15000
+                    "target_sheets": 1.0,
+                    "target_cost": 30410,
+                    "dividends_received": 2340
                 }
             ]
         }
@@ -62,85 +62,110 @@ if "pledges" not in st.session_state:
 if "editing_id" not in st.session_state:
     st.session_state.editing_id = None
 
-# --- 新增 / 編輯專案表單區 ---
-def project_form(edit_data=None):
-    is_edit = edit_data is not None
-    title = "✏️ 編輯專案內容" if is_edit else "➕ 新增質押專案"
-    
-    with st.expander(title, expanded=is_edit):
-        with st.form(key="pledge_form_" + ("edit" if is_edit else "add")):
-            p_name = st.text_input("專案名稱", value=edit_data["project_name"] if is_edit else "新質押專案")
-            col1, col2 = st.columns(2)
-            with col1:
-                p_code = st.text_input("質押標的代號", value=edit_data["pledge_code"] if is_edit else "0050")
-                p_sheets = st.number_input("質押張數", min_value=0.01, value=float(edit_data["pledge_sheets"]) if is_edit else 5.0, step=0.5)
-                p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_data["pledge_cost"]) if is_edit else 100000)
-            with col2:
-                p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_data["loan_amount"]) if is_edit else 500000)
-                p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_data["interest_rate"]) if is_edit else 3.8, step=0.1)
-                p_date = st.date_input("質押開始日期", value=edit_data["pledge_date"] if is_edit else date.today())
-            
-            st.markdown("---")
-            st.subheader("🎯 轉投資標的設定 (可新增多個)")
-            num_targets = st.number_input("轉投資標的數量", min_value=1, max_value=5, value=len(edit_data["targets"]) if is_edit else 1)
-            
-            targets_input = []
-            for i in range(int(num_targets)):
-                st.markdown(f"**標的 #{i+1}**")
-                tc1, tc2, tc3, tc4 = st.columns(4)
-                default_t = edit_data["targets"][i] if (is_edit and i < len(edit_data["targets"])) else {}
-                
-                with tc1:
-                    t_code = st.text_input(f"代號 #{i+1}", value=default_t.get("target_code", "00919"), key=f"t_code_{i}")
-                with tc2:
-                    t_sheets = st.number_input(f"張數 #{i+1}", min_value=0.01, value=float(default_t.get("target_sheets", 10.0)), step=0.5, key=f"t_sheets_{i}")
-                with tc3:
-                    t_cost = st.number_input(f"總成本 #{i+1}", min_value=0, value=int(default_t.get("target_cost", 230000)), key=f"t_cost_{i}")
-                with tc4:
-                    t_div = st.number_input(f"已領股息 #{i+1}", min_value=0, value=int(default_t.get("dividends_received", 0)), key=f"t_div_{i}")
-                
-                targets_input.append({
-                    "target_code": t_code,
-                    "target_sheets": t_sheets,
-                    "target_cost": t_cost,
-                    "dividends_received": t_div
-                })
+if "form_targets" not in st.session_state:
+    st.session_state.form_targets = []
 
-            submit = st.form_submit_button("💾 儲存專案" if is_edit else "確認新增")
-            if submit:
-                new_project = {
-                    "id": edit_data["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1),
-                    "project_name": p_name,
-                    "pledge_code": p_code,
-                    "pledge_sheets": p_sheets,
-                    "pledge_cost": p_cost,
-                    "loan_amount": p_loan,
-                    "interest_rate": p_rate,
-                    "pledge_date": p_date,
-                    "targets": targets_input
-                }
-                
-                if is_edit:
-                    for idx, p in enumerate(st.session_state.pledges):
-                        if p["id"] == edit_data["id"]:
-                            st.session_state.pledges[idx] = new_project
-                            break
-                    st.session_state.editing_id = None
-                    st.success("專案已更新！")
-                else:
-                    st.session_state.pledges.append(new_project)
-                    st.success("專案已新增！")
+# --- 新增 / 編輯專案區塊 ---
+def open_edit_form(edit_data=None):
+    if edit_data:
+        st.session_state.editing_id = edit_data["id"]
+        st.session_state.form_targets = [dict(t) for t in edit_data["targets"]]
+    else:
+        st.session_state.editing_id = "NEW"
+        st.session_state.form_targets = [{
+            "target_code": "00919",
+            "target_sheets": 1.0,
+            "target_cost": 30000,
+            "dividends_received": 0
+        }]
+
+is_editing = st.session_state.editing_id is not None
+edit_item = None
+if is_editing and st.session_state.editing_id != "NEW":
+    edit_item = next((p for p in st.session_state.pledges if p["id"] == st.session_state.editing_id), None)
+
+form_title = "✏️ 編輯專案" if (is_editing and st.session_state.editing_id != "NEW") else "➕ 新增質押專案"
+
+with st.expander(form_title, expanded=is_editing):
+    with st.form(key="pledge_main_form"):
+        p_name = st.text_input("專案名稱", value=edit_item["project_name"] if edit_item else "新質押專案")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            p_code = st.text_input("質押標的代號", value=edit_item["pledge_code"] if edit_item else "0050")
+            p_sheets = st.number_input("質押張數", min_value=0.01, value=float(edit_item["pledge_sheets"]) if edit_item else 5.0, step=0.5)
+            p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if edit_item else 100000)
+        with col2:
+            p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if edit_item else 500000)
+            p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if edit_item else 3.8, step=0.01)
+            p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if edit_item else date.today())
+        
+        st.markdown("---")
+        st.subheader("🎯 轉投資標的設定")
+        
+        updated_targets = []
+        for idx, t in enumerate(st.session_state.form_targets):
+            st.markdown(f"**轉投資標的 #{idx+1}**")
+            tc1, tc2, tc3, tc4 = st.columns(4)
+            with tc1:
+                t_code = st.text_input(f"標的代號", value=t.get("target_code", ""), key=f"t_code_{idx}")
+            with tc2:
+                t_sheets = st.number_input(f"買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"t_sheets_{idx}")
+            with tc3:
+                t_cost = st.number_input(f"買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"t_cost_{idx}")
+            with tc4:
+                t_div = st.number_input(f"已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"t_div_{idx}")
+            
+            updated_targets.append({
+                "target_code": t_code,
+                "target_sheets": t_sheets,
+                "target_cost": t_cost,
+                "dividends_received": t_div
+            })
+
+        submit_btn = st.form_submit_button("💾 儲存專案數據")
+
+        if submit_btn:
+            new_id = edit_item["id"] if edit_item else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
+            new_project = {
+                "id": new_id,
+                "project_name": p_name,
+                "pledge_code": p_code,
+                "pledge_sheets": p_sheets,
+                "pledge_cost": p_cost,
+                "loan_amount": p_loan,
+                "interest_rate": p_rate,
+                "pledge_date": p_date,
+                "targets": updated_targets
+            }
+            
+            if edit_item:
+                for i, p in enumerate(st.session_state.pledges):
+                    if p["id"] == edit_item["id"]:
+                        st.session_state.pledges[i] = new_project
+                        break
+            else:
+                st.session_state.pledges.append(new_project)
+            
+            st.session_state.editing_id = None
+            st.success("專案已成功儲存！")
+            st.rerun()
+
+    # 在表單外放動態新增與刪除標的按鈕
+    b_col1, b_col2 = st.columns([1, 4])
+    with b_col1:
+        if st.button("➕ 新增轉投資標的"):
+            st.session_state.form_targets.append({
+                "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
+            })
+            st.rerun()
+    with b_col2:
+        if len(st.session_state.form_targets) > 1:
+            if st.button("🗑️ 刪除最後一個標的"):
+                st.session_state.form_targets.pop()
                 st.rerun()
 
-# 顯示編輯視窗或新增按鈕
-if st.session_state.editing_id is not None:
-    edit_item = next((p for p in st.session_state.pledges if p["id"] == st.session_state.editing_id), None)
-    if edit_item:
-        project_form(edit_item)
-else:
-    project_form()
-
-# --- 資料計算邏輯 ---
+# --- 資料彙整與計算 ---
 total_collateral_value = 0.0
 total_loan_amount = 0.0
 total_interest_paid = 0.0
@@ -167,6 +192,8 @@ for item in st.session_state.pledges:
     target_summary_list = []
 
     for t in item["targets"]:
+        if not t["target_code"]:
+            continue
         t_price = get_stock_price(t["target_code"])
         c_val = t_price * t["target_sheets"] * 1000
         proj_target_val += c_val
@@ -181,20 +208,19 @@ for item in st.session_state.pledges:
     target_unrealized_gain = proj_target_val - proj_target_cost
     net_arbitrage = (target_unrealized_gain + proj_dividends) - accrued_interest
 
-    # 格式化顯示字串
     table_rows.append({
-        "ID": item["id"],
-        "專案名稱": item["project_name"],
-        "質押標的": f"{item['pledge_code']} ({item['pledge_sheets']}張)",
-        "原始成本": f"${item['pledge_cost']:,.0f}",
-        "質押當前市值": f"${current_collateral_val:,.0f} (@{p_price})",
-        "借款金額": f"${item['loan_amount']:,.0f}",
-        "天數/利率": f"{days_pledged}天 / {item['interest_rate']}%",
-        "至今累計利息": f"${accrued_interest:,.0f}",
-        "轉投資標的": ", ".join(target_summary_list),
-        "轉投資市值": f"${proj_target_val:,.0f}",
-        "已領股息": f"${proj_dividends:,.0f}",
-        "實質淨套利": net_arbitrage
+        "id": item["id"],
+        "name": item["project_name"],
+        "pledge": f"{item['pledge_code']} ({item['pledge_sheets']}張)",
+        "cost": f"${item['pledge_cost']:,.0f}",
+        "pledge_val": f"${current_collateral_val:,.0f} (@{p_price})",
+        "loan": f"${item['loan_amount']:,.0f}",
+        "days_rate": f"{days_pledged}天 / {item['interest_rate']}%",
+        "interest": f"${accrued_interest:,.0f}",
+        "targets": "<br>".join(target_summary_list) if target_summary_list else "無",
+        "target_val": f"${proj_target_val:,.0f}",
+        "dividends": f"${proj_dividends:,.0f}",
+        "arbitrage": net_arbitrage
     })
 
 # 計算整戶維持率與總套利
@@ -219,95 +245,67 @@ m4.metric("💰 總實質套利金額", f"${total_net_arbitrage:,.0f}", delta=f"
 
 st.divider()
 
-# --- 美化表格呈現區 ---
+# --- 乾淨 HTML 表格呈現區 ---
 st.subheader("📋 質押專案彙整總表")
 
 if table_rows:
-    # 建立 Pandas DataFrame
-    df = pd.DataFrame(table_rows)
-
-    # 自訂 HTML 表格 (支援台股獲利紅字顯示)
-    html_table = """
-    <style>
-        .styled-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-            text-align: center;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.15);
-            border-radius: 8px;
-            overflow: hidden;
-            margin-bottom: 20px;
-        }
-        .styled-table thead tr {
-            background-color: #1f77b4;
-            color: #ffffff;
-            text-align: center;
-            font-weight: bold;
-        }
-        .styled-table th, .styled-table td {
-            padding: 12px 10px;
-            border-bottom: 1px solid #dddddd;
-        }
-        .styled-table tbody tr:nth-of-type(even) {
-            background-color: rgba(255, 255, 255, 0.05);
-        }
-        .profit-red { color: #ff4d4f; font-weight: bold; font-size: 1.05em; }
-        .loss-green { color: #52c41a; font-weight: bold; font-size: 1.05em; }
-    </style>
-    <table class="styled-table">
-        <thead>
-            <tr>
-                <th>專案名稱</th>
-                <th>質押標的</th>
-                <th>原始成本</th>
-                <th>當前質押市值</th>
-                <th>借款金額</th>
-                <th>天數/利率</th>
-                <th>至今利息</th>
-                <th>轉投資標的</th>
-                <th>轉投資市值</th>
-                <th>已領股息</th>
-                <th>🔥 實質淨套利</th>
-            </tr>
-        </thead>
-        <tbody>
-    """
-
+    table_body = ""
     for r in table_rows:
-        arb_val = r["實質淨套利"]
+        arb_val = r["arbitrage"]
         if arb_val > 0:
-            arb_html = f"<span class='profit-red'>+${arb_val:,.0f}</span>"
+            arb_html = f"<b style='color:#ff4d4f;'>+${arb_val:,.0f}</b>"
         elif arb_val < 0:
-            arb_html = f"<span class='loss-green'>-${abs(arb_val):,.0f}</span>"
+            arb_html = f"<b style='color:#52c41a;'>-${abs(arb_val):,.0f}</b>"
         else:
             arb_html = "$0"
 
-        html_table += f"""
-            <tr>
-                <td><b>{r['專案名稱']}</b></td>
-                <td>{r['質押標的']}</td>
-                <td>{r['原始成本']}</td>
-                <td>{r['質押當前市值']}</td>
-                <td>{r['借款金額']}</td>
-                <td>{r['天數/利率']}</td>
-                <td>{r['至今累計利息']}</td>
-                <td>{r['轉投資標的']}</td>
-                <td>{r['轉投資市值']}</td>
-                <td>{r['已領股息']}</td>
-                <td>{arb_html}</td>
-            </tr>
-        """
-    html_table += "</tbody></table>"
-    st.markdown(html_table, unsafe_allow_html=True)
+        table_body += f"""<tr>
+<td><b>{r['name']}</b></td>
+<td>{r['pledge']}</td>
+<td>{r['cost']}</td>
+<td>{r['pledge_val']}</td>
+<td>{r['loan']}</td>
+<td>{r['days_rate']}</td>
+<td>{r['interest']}</td>
+<td>{r['targets']}</td>
+<td>{r['target_val']}</td>
+<td>{r['dividends']}</td>
+<td>{arb_html}</td>
+</tr>"""
 
-    # 專案操作按鈕區
+    full_html = f"""
+    <div style="overflow-x: auto;">
+        <table style="width:100%; border-collapse:collapse; text-align:center; font-size:14px; background-color:#ffffff; color:#333333; border-radius:8px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+            <thead>
+                <tr style="background-color:#1e88e5; color:#ffffff; font-weight:bold;">
+                    <th style="padding:12px 8px;">專案名稱</th>
+                    <th style="padding:12px 8px;">質押標的</th>
+                    <th style="padding:12px 8px;">原始成本</th>
+                    <th style="padding:12px 8px;">當前質押市值</th>
+                    <th style="padding:12px 8px;">借款金額</th>
+                    <th style="padding:12px 8px;">天數/利率</th>
+                    <th style="padding:12px 8px;">至今利息</th>
+                    <th style="padding:12px 8px;">轉投資標的</th>
+                    <th style="padding:12px 8px;">轉投資市值</th>
+                    <th style="padding:12px 8px;">已領股息</th>
+                    <th style="padding:12px 8px;">🔥 實質淨套利</th>
+                </tr>
+            </thead>
+            <tbody>
+                {table_body}
+            </tbody>
+        </table>
+    </div>
+    """
+    st.markdown(full_html, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("⚙️ 專案管理操作")
-    col_sel, col_act1, col_act2 = st.columns([4, 1, 1])
+    col_sel, col_act1, col_act2, col_act3 = st.columns([3, 1, 1, 1])
     
     with col_sel:
         selected_proj_id = st.selectbox(
-            "選擇要管理的專案：", 
+            "選擇專案：", 
             options=[p["id"] for p in st.session_state.pledges],
             format_func=lambda x: next((p["project_name"] for p in st.session_state.pledges if p["id"] == x), "")
         )
@@ -315,18 +313,29 @@ if table_rows:
     with col_act1:
         st.write("")
         st.write("")
-        if st.button("✏️ 編輯選擇的專案", use_container_width=True):
-            st.session_state.editing_id = selected_proj_id
-            st.rerun()
+        if st.button("✏️ 編輯專案", use_container_width=True):
+            target_p = next((p for p in st.session_state.pledges if p["id"] == selected_proj_id), None)
+            if target_p:
+                open_edit_form(target_p)
+                st.rerun()
 
     with col_act2:
         st.write("")
         st.write("")
-        if st.button("🗑️ 刪除選擇的專案", use_container_width=True):
+        if st.button("➕ 新建專案", use_container_width=True):
+            open_edit_form(None)
+            st.rerun()
+
+    with col_act3:
+        st.write("")
+        st.write("")
+        if st.button("🗑️ 刪除專案", use_container_width=True):
             st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != selected_proj_id]
-            if st.session_state.editing_id == selected_proj_id:
-                st.session_state.editing_id = None
-            st.success("已成功刪除！")
+            st.session_state.editing_id = None
+            st.success("已成功刪除專案！")
             st.rerun()
 else:
-    st.info("目前尚無專案，請點選上方「➕ 新增質押專案」建構你的第一筆套利專案！")
+    st.info("目前尚無專案，請點選上方展開區建立你的第一筆套利專案！")
+    if st.button("➕ 開始新增專案"):
+        open_edit_form(None)
+        st.rerun()
