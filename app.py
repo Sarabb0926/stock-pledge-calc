@@ -2,17 +2,75 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, date
+from streamlit_gsheets import GSheetsConnection
+import json
 
 # 頁面配置
 st.set_page_config(page_title="股票質押與實質套利計算器", page_icon="📈", layout="wide")
 
-st.title("📈 股票質押與實質套利計算器")
-st.caption("自動連動實時股價 · 動態新增轉投資標的 · 整戶維持率監控 · 表格化顯示")
+st.title("📈 股票質押與實質套利計算器 (Google Sheets 自動存檔版)")
+st.caption("自動連動實時股價 · 雲端自動存檔 · 跨裝置同步 · 整戶維持率監控")
+
+# --- 初始化 Google Sheets 連線 ---
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception:
+    conn = None
+
+def load_pledges_from_gsheets():
+    """從 Google Sheets 讀取專案資料"""
+    if conn is None:
+        return None
+    try:
+        df = conn.read(ttl=0) # ttl=0 表示即時抓取不快取
+        if df.empty:
+            return None
+        
+        pledges_list = []
+        for _, row in df.iterrows():
+            pledges_list.append({
+                "id": int(row["id"]),
+                "project_name": str(row["project_name"]),
+                "pledge_code": str(row["pledge_code"]),
+                "pledge_sheets": float(row["pledge_sheets"]),
+                "pledge_cost": float(row["pledge_cost"]),
+                "loan_amount": float(row["loan_amount"]),
+                "interest_rate": float(row["interest_rate"]),
+                "pledge_date": datetime.strptime(str(row["pledge_date"]), "%Y-%m-%d").date(),
+                "targets": json.loads(str(row["targets_json"]))
+            })
+        return pledges_list
+    except Exception as e:
+        return None
+
+def save_pledges_to_gsheets(pledges_list):
+    """將專案資料寫入 Google Sheets"""
+    if conn is None or "spreadsheet" not in st.secrets.get("connections", {}).get("gsheets", {}):
+        return False
+    try:
+        flat_data = []
+        for p in pledges_list:
+            flat_data.append({
+                "id": p["id"],
+                "project_name": p["project_name"],
+                "pledge_code": p["pledge_code"],
+                "pledge_sheets": p["pledge_sheets"],
+                "pledge_cost": p["pledge_cost"],
+                "loan_amount": p["loan_amount"],
+                "interest_rate": p["interest_rate"],
+                "pledge_date": p["pledge_date"].strftime("%Y-%m-%d"),
+                "targets_json": json.dumps(p["targets"], ensure_ascii=False)
+            })
+        df_to_save = pd.DataFrame(flat_data)
+        conn.update(data=df_to_save)
+        return True
+    except Exception as e:
+        st.error(f"雲端存檔失敗: {e}")
+        return False
 
 # --- 股價抓取工具函數 ---
 @st.cache_data(ttl=300)
 def get_stock_price(symbol: str) -> float:
-    """自動處理台股代號（例如：0050 -> 0050.TW）並抓取最新股價"""
     symbol = symbol.strip().upper()
     if not symbol:
         return 0.0
@@ -38,26 +96,30 @@ def get_stock_price(symbol: str) -> float:
 
 # --- 初始化 Session State 資料庫 ---
 if "pledges" not in st.session_state:
-    st.session_state.pledges = [
-        {
-            "id": 1,
-            "project_name": "2025質押套利計畫",
-            "pledge_code": "00878",
-            "pledge_sheets": 10.0,
-            "pledge_cost": 111181,
-            "loan_amount": 100000,
-            "interest_rate": 2.28,
-            "pledge_date": date(2025, 9, 5),
-            "targets": [
-                {
-                    "target_code": "00919",
-                    "target_sheets": 1.0,
-                    "target_cost": 30410,
-                    "dividends_received": 2340
-                }
-            ]
-        }
-    ]
+    cloud_data = load_pledges_from_gsheets()
+    if cloud_data is not None:
+        st.session_state.pledges = cloud_data
+    else:
+        st.session_state.pledges = [
+            {
+                "id": 1,
+                "project_name": "2025質押套利計畫",
+                "pledge_code": "00878",
+                "pledge_sheets": 10.0,
+                "pledge_cost": 111181,
+                "loan_amount": 100000,
+                "interest_rate": 2.28,
+                "pledge_date": date(2025, 9, 5),
+                "targets": [
+                    {
+                        "target_code": "00919",
+                        "target_sheets": 1.0,
+                        "target_cost": 30410,
+                        "dividends_received": 2340
+                    }
+                ]
+            }
+        ]
 
 if "editing_id" not in st.session_state:
     st.session_state.editing_id = None
@@ -65,7 +127,7 @@ if "editing_id" not in st.session_state:
 if "form_targets" not in st.session_state:
     st.session_state.form_targets = []
 
-# --- 新增 / 編輯專案區塊 ---
+# --- 表單處理邏輯 ---
 def open_edit_form(edit_data=None):
     if edit_data:
         st.session_state.editing_id = edit_data["id"]
@@ -89,7 +151,6 @@ form_title = "✏️ 編輯專案" if (is_editing and st.session_state.editing_i
 with st.expander(form_title, expanded=is_editing):
     with st.form(key="pledge_main_form"):
         p_name = st.text_input("專案名稱", value=edit_item["project_name"] if edit_item else "新質押專案")
-        
         col1, col2 = st.columns(2)
         with col1:
             p_code = st.text_input("質押標的代號", value=edit_item["pledge_code"] if edit_item else "0050")
@@ -123,7 +184,7 @@ with st.expander(form_title, expanded=is_editing):
                 "dividends_received": t_div
             })
 
-        submit_btn = st.form_submit_button("💾 儲存專案數據")
+        submit_btn = st.form_submit_button("💾 儲存專案數據並同步雲端")
 
         if submit_btn:
             new_id = edit_item["id"] if edit_item else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
@@ -147,11 +208,11 @@ with st.expander(form_title, expanded=is_editing):
             else:
                 st.session_state.pledges.append(new_project)
             
+            save_pledges_to_gsheets(st.session_state.pledges)
             st.session_state.editing_id = None
-            st.success("專案已成功儲存！")
+            st.success("專案已成功儲存並同步至 Google Sheets！")
             st.rerun()
 
-    # 在表單外放動態新增與刪除標的按鈕
     b_col1, b_col2 = st.columns([1, 4])
     with b_col1:
         if st.button("➕ 新增轉投資標的"):
@@ -165,7 +226,7 @@ with st.expander(form_title, expanded=is_editing):
                 st.session_state.form_targets.pop()
                 st.rerun()
 
-# --- 資料彙整與計算 ---
+# --- 資料計算與彙整 ---
 total_collateral_value = 0.0
 total_loan_amount = 0.0
 total_interest_paid = 0.0
@@ -227,7 +288,7 @@ for item in st.session_state.pledges:
 overall_maintenance_ratio = (total_collateral_value / total_loan_amount * 100) if total_loan_amount > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板卡片 ---
+# --- 頂部儀表板 ---
 st.divider()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
@@ -245,7 +306,7 @@ m4.metric("💰 總實質套利金額", f"${total_net_arbitrage:,.0f}", delta=f"
 
 st.divider()
 
-# --- 乾淨 HTML 表格呈現區 ---
+# --- 表格呈現 ---
 st.subheader("📋 質押專案彙整總表")
 
 if table_rows:
@@ -331,8 +392,9 @@ if table_rows:
         st.write("")
         if st.button("🗑️ 刪除專案", use_container_width=True):
             st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != selected_proj_id]
+            save_pledges_to_gsheets(st.session_state.pledges)
             st.session_state.editing_id = None
-            st.success("已成功刪除專案！")
+            st.success("已成功刪除專案並同步雲端！")
             st.rerun()
 else:
     st.info("目前尚無專案，請點選上方展開區建立你的第一筆套利專案！")
