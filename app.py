@@ -2,51 +2,54 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, date
-from streamlit_gsheets import GSheetsConnection
 import json
+import requests
 
 # 頁面配置
-st.set_page_config(page_title="股票質押與實質套利計算器", page_icon="📈", layout="wide")
+st.set_page_config(page_title="股票質押與實質套利筆記本", page_icon="📈", layout="wide")
 
-st.title("📈 股票質押與實質套利計算器 (Google Sheets 自動存檔版)")
-st.caption("自動連動實時股價 · 雲端自動存檔 · 跨裝置同步 · 整戶維持率監控")
+st.title("📈 股票質押與實質套利筆記本 (Google Sheets 雲端連線版)")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置即時同步 · 整戶維持率監控")
 
-# --- 初始化 Google Sheets 連線 ---
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception:
-    conn = None
+# ==============================================================================
+# 🔗 請將下方引號內的網址換成你的 Google Apps Script 網址
+# ==============================================================================
+GSHEET_API_URL = "https://script.google.com/macros/s/AKfycby-8R2n7t_l7oX26KjQa1go6PlgzdAZ975prldxzsav4QVHhvdaoDWr5dn5sWBrEDW1ww/exec"
+# ==============================================================================
 
-def load_pledges_from_gsheets():
+def load_pledges_from_cloud():
     """從 Google Sheets 讀取專案資料"""
-    if conn is None:
+    if "AKfycb" not in GSHEET_API_URL:
         return None
     try:
-        df = conn.read(ttl=0) # ttl=0 表示即時抓取不快取
-        if df.empty:
-            return None
-        
-        pledges_list = []
-        for _, row in df.iterrows():
-            pledges_list.append({
-                "id": int(row["id"]),
-                "project_name": str(row["project_name"]),
-                "pledge_code": str(row["pledge_code"]),
-                "pledge_sheets": float(row["pledge_sheets"]),
-                "pledge_cost": float(row["pledge_cost"]),
-                "loan_amount": float(row["loan_amount"]),
-                "interest_rate": float(row["interest_rate"]),
-                "pledge_date": datetime.strptime(str(row["pledge_date"]), "%Y-%m-%d").date(),
-                "targets": json.loads(str(row["targets_json"]))
-            })
-        return pledges_list
+        res = requests.get(GSHEET_API_URL, timeout=8)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) > 0:
+                parsed_list = []
+                for row in data:
+                    t_json = row.get("targets_json", "[]")
+                    targets = json.loads(t_json) if isinstance(t_json, str) else t_json
+                    parsed_list.append({
+                        "id": int(row["id"]),
+                        "project_name": str(row["project_name"]),
+                        "pledge_code": str(row["pledge_code"]),
+                        "pledge_sheets": float(row["pledge_sheets"]),
+                        "pledge_cost": float(row["pledge_cost"]),
+                        "loan_amount": float(row["loan_amount"]),
+                        "interest_rate": float(row["interest_rate"]),
+                        "pledge_date": datetime.strptime(str(row["pledge_date"]).split("T")[0], "%Y-%m-%d").date(),
+                        "targets": targets
+                    })
+                return parsed_list
     except Exception as e:
-        return None
+        pass
+    return None
 
-def save_pledges_to_gsheets(pledges_list):
-    """將專案資料寫入 Google Sheets"""
-    if conn is None or "spreadsheet" not in st.secrets.get("connections", {}).get("gsheets", {}):
-        return False
+def save_pledges_to_cloud(pledges_list):
+    """將專案資料即時寫入 Google Sheets"""
+    if "AKfycb" not in GSHEET_API_URL:
+        return False, "尚未設定 Google Sheets API 網址"
     try:
         flat_data = []
         for p in pledges_list:
@@ -61,12 +64,13 @@ def save_pledges_to_gsheets(pledges_list):
                 "pledge_date": p["pledge_date"].strftime("%Y-%m-%d"),
                 "targets_json": json.dumps(p["targets"], ensure_ascii=False)
             })
-        df_to_save = pd.DataFrame(flat_data)
-        conn.update(data=df_to_save)
-        return True
+        
+        res = requests.post(GSHEET_API_URL, json=flat_data, timeout=8)
+        if res.status_code == 200:
+            return True, "雲端同步成功"
+        return False, f"HTTP 狀態碼: {res.status_code}"
     except Exception as e:
-        st.error(f"雲端存檔失敗: {e}")
-        return False
+        return False, str(e)
 
 # --- 股價抓取工具函數 ---
 @st.cache_data(ttl=300)
@@ -96,8 +100,8 @@ def get_stock_price(symbol: str) -> float:
 
 # --- 初始化 Session State 資料庫 ---
 if "pledges" not in st.session_state:
-    cloud_data = load_pledges_from_gsheets()
-    if cloud_data is not None:
+    cloud_data = load_pledges_from_cloud()
+    if cloud_data:
         st.session_state.pledges = cloud_data
     else:
         st.session_state.pledges = [
@@ -169,13 +173,13 @@ with st.expander(form_title, expanded=is_editing):
             st.markdown(f"**轉投資標的 #{idx+1}**")
             tc1, tc2, tc3, tc4 = st.columns(4)
             with tc1:
-                t_code = st.text_input(f"標的代號", value=t.get("target_code", ""), key=f"t_code_{idx}")
+                t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"t_code_{idx}")
             with tc2:
-                t_sheets = st.number_input(f"買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"t_sheets_{idx}")
+                t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"t_sheets_{idx}")
             with tc3:
-                t_cost = st.number_input(f"買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"t_cost_{idx}")
+                t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"t_cost_{idx}")
             with tc4:
-                t_div = st.number_input(f"已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"t_div_{idx}")
+                t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"t_div_{idx}")
             
             updated_targets.append({
                 "target_code": t_code,
@@ -184,7 +188,7 @@ with st.expander(form_title, expanded=is_editing):
                 "dividends_received": t_div
             })
 
-        submit_btn = st.form_submit_button("💾 儲存專案數據並同步雲端")
+        submit_btn = st.form_submit_button("💾 儲存並即時同步 Google Sheets")
 
         if submit_btn:
             new_id = edit_item["id"] if edit_item else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
@@ -208,9 +212,12 @@ with st.expander(form_title, expanded=is_editing):
             else:
                 st.session_state.pledges.append(new_project)
             
-            save_pledges_to_gsheets(st.session_state.pledges)
+            success, msg = save_pledges_to_cloud(st.session_state.pledges)
             st.session_state.editing_id = None
-            st.success("專案已成功儲存並同步至 Google Sheets！")
+            if success:
+                st.success("✅ 專案已儲存，並已成功同步至 Google Sheets！")
+            else:
+                st.warning(f"⚠️ 本地已儲存，但雲端同步失敗：{msg}")
             st.rerun()
 
     b_col1, b_col2 = st.columns([1, 4])
@@ -284,7 +291,6 @@ for item in st.session_state.pledges:
         "arbitrage": net_arbitrage
     })
 
-# 計算整戶維持率與總套利
 overall_maintenance_ratio = (total_collateral_value / total_loan_amount * 100) if total_loan_amount > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
@@ -306,7 +312,7 @@ m4.metric("💰 總實質套利金額", f"${total_net_arbitrage:,.0f}", delta=f"
 
 st.divider()
 
-# --- 表格呈現 ---
+# --- 彙整總表 ---
 st.subheader("📋 質押專案彙整總表")
 
 if table_rows:
@@ -392,9 +398,9 @@ if table_rows:
         st.write("")
         if st.button("🗑️ 刪除專案", use_container_width=True):
             st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != selected_proj_id]
-            save_pledges_to_gsheets(st.session_state.pledges)
+            save_pledges_to_cloud(st.session_state.pledges)
             st.session_state.editing_id = None
-            st.success("已成功刪除專案並同步雲端！")
+            st.success("已成功刪除專案並同步 Google Sheets！")
             st.rerun()
 else:
     st.info("目前尚無專案，請點選上方展開區建立你的第一筆套利專案！")
