@@ -37,7 +37,7 @@ div[data-testid="stFormSubmitButton"] > button {
     font-weight: bold !important;
     font-size: 15px !important;
     border-radius: 8px !important;
-    box-shadow: 0 2px 4px rgba(25, 118, 210, 0.1) !important;
+    box-shadow: 0 2px 4px rgba(255, 108, 210, 0.1) !important;
     transition: all 0.2s ease !important;
 }
 div[data-testid="stFormSubmitButton"] > button:hover {
@@ -250,7 +250,7 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
-# --- 彈窗表單對話盒 (專屬 Key 隔離防串位) ---
+# --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
@@ -474,6 +474,54 @@ with m4:
 m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
 
 st.divider()
+
+# --- 📈 整體時間軸累積成長曲線圖 ---
+if len(st.session_state.pledges) > 0:
+    with st.expander("📈 查看整體時間軸累積成長趨勢圖", expanded=True):
+        # 找出最早質押日期
+        earliest_date = min([p["pledge_date"] for p in st.session_state.pledges])
+        today_date = date.today()
+        
+        # 產生以週/月為步進的時間序列節點
+        date_range = pd.date_range(start=earliest_date, end=today_date, freq="15D")
+        if len(date_range) == 0 or date_range[-1].date() < today_date:
+            date_range = date_range.append(pd.DatetimeIndex([pd.to_datetime(today_date)]))
+        
+        timeline_records = []
+        for cur_dt in date_range:
+            d = cur_dt.date()
+            t_loan = 0.0
+            t_target_val = 0.0
+            t_target_cost = 0.0
+            t_div = 0.0
+            t_interest = 0.0
+
+            for p in st.session_state.pledges:
+                if p["pledge_date"] <= d:
+                    t_loan += p["loan_amount"]
+                    days = max((d - p["pledge_date"]).days, 1)
+                    t_interest += p["loan_amount"] * (p["interest_rate"] / 100.0) * (days / 365.0)
+
+                    for t in p.get("targets", []):
+                        if t.get("target_code") and t.get("target_code") != "0":
+                            p_price = get_stock_price(t["target_code"])
+                            t_target_val += p_price * t.get("target_sheets", 1.0) * 1000
+                            t_target_cost += t.get("target_cost", 0)
+                            # 依時間比例估計股息入帳趨勢
+                            t_div += t.get("dividends_received", 0)
+
+            t_net_arb = (t_target_val - t_target_cost + t_div) - t_interest
+            timeline_records.append({
+                "日期": d.strftime("%Y-%m-%d"),
+                "💳 累計借款金額": round(t_loan),
+                "📈 轉投資總市值": round(t_target_val),
+                "🔥 實質累計淨套利": round(t_net_arb)
+            })
+
+        if timeline_records:
+            df_chart = pd.DataFrame(timeline_records).set_index("日期")
+            st.line_chart(df_chart, use_container_width=True)
+            st.caption("💡 曲線圖顯示質押資金槓桿與實質淨套利隨時間推移的累積增長軌跡。")
 
 # --- 彙整總表與操作按鈕 ---
 header_col1, header_col2 = st.columns([4, 1.2])
