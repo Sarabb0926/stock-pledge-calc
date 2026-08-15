@@ -315,6 +315,17 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
+def clear_dialog_state(dlg_id):
+    """徹底清理彈窗內部各欄位暫存快取，確保重新打開時資料乾淨"""
+    prefix_list = [
+        f"f_name_{dlg_id}", f"f_code_{dlg_id}", f"f_sheets_{dlg_id}", f"f_cost_{dlg_id}",
+        f"f_roll_{dlg_id}", f"f_loan_{dlg_id}", f"f_rate_{dlg_id}", f"f_date_{dlg_id}",
+        f"f_repaid_{dlg_id}", f"f_repaid_int_{dlg_id}", f"f_rdate_{dlg_id}", f"cur_dlg_targets_{dlg_id}"
+    ]
+    for k in list(st.session_state.keys()):
+        if any(k.startswith(p) for p in prefix_list):
+            del st.session_state[k]
+
 # --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
@@ -433,8 +444,7 @@ def project_form_dialog(edit_item=None):
                 st.session_state.pledges.append(new_project)
             
             save_pledges_to_cloud(st.session_state.pledges)
-            if f"cur_dlg_targets_{dlg_id}" in st.session_state:
-                del st.session_state[f"cur_dlg_targets_{dlg_id}"]
+            clear_dialog_state(dlg_id)
             st.success("✅ 專案已儲存並同步至雲端！")
             st.rerun()
 
@@ -455,8 +465,7 @@ def project_form_dialog(edit_item=None):
             if st.button("❌ 刪除此專案", key=f"btn_del_p_{dlg_id}", use_container_width=True):
                 st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != edit_item["id"]]
                 save_pledges_to_cloud(st.session_state.pledges)
-                if f"cur_dlg_targets_{dlg_id}" in st.session_state:
-                    del st.session_state[f"cur_dlg_targets_{dlg_id}"]
+                clear_dialog_state(dlg_id)
                 st.rerun()
 
 # --- 資料計算與彙整 ---
@@ -480,7 +489,6 @@ for item in st.session_state.pledges:
     orig_loan = item["loan_amount"]
     remaining_loan = max(orig_loan - repaid_amt, 0.0)
     
-    # 判斷是否為純擔保品或已結清
     is_collateral_only = (orig_loan == 0 and p_code_norm != "0" and item.get("pledge_sheets", 0) > 0)
     is_closed = (remaining_loan == 0 and orig_loan > 0)
     
@@ -531,7 +539,7 @@ for item in st.session_state.pledges:
     target_unrealized_gain = proj_target_val - proj_target_cost
     net_arbitrage = (target_unrealized_gain + proj_dividends) - accrued_interest
 
-    # 🎯 狀態標籤判定（最前置）
+    # 🎯 狀態標籤判定
     days_to_refinance = max(540 - days_pledged, 0)
     if is_collateral_only:
         status_html = "<span class='badge-collateral'>🛡️ 擔保品</span>"
@@ -625,8 +633,7 @@ with tab_proj:
         st.subheader("📋 專案明細列表")
     with header_col2:
         if st.button("➕ 新增質押專案", key="btn_add_proj", help="點擊建立新的質押套利專案", use_container_width=True):
-            if "cur_dlg_targets_new" in st.session_state:
-                del st.session_state["cur_dlg_targets_new"]
+            clear_dialog_state("new")
             project_form_dialog(None)
 
     if project_display_data:
@@ -688,8 +695,7 @@ with tab_proj:
                 st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
                 if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", use_container_width=True):
                     p_dlg_id = str(r['id'])
-                    if f"cur_dlg_targets_{p_dlg_id}" in st.session_state:
-                        del st.session_state[f"cur_dlg_targets_{p_dlg_id}"]
+                    clear_dialog_state(p_dlg_id)
                     project_form_dialog(r["item_obj"])
     else:
         st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
