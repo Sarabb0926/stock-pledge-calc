@@ -72,30 +72,33 @@ def save_pledges_to_cloud(pledges_list):
     except Exception as e:
         return False, str(e)
 
-# --- 股價抓取工具函數 ---
+# --- 強化版股價抓取工具函數 ---
 @st.cache_data(ttl=300)
 def get_stock_price(symbol: str) -> float:
-    symbol = symbol.strip().upper()
+    symbol = str(symbol).strip().upper()
     if not symbol:
         return 0.0
-    if not symbol.endswith(".TW") and not symbol.endswith(".TWO"):
-        symbol_formatted = f"{symbol}.TW"
-    else:
-        symbol_formatted = symbol
     
-    try:
-        ticker = yf.Ticker(symbol_formatted)
-        hist = ticker.history(period="1d")
-        if not hist.empty:
-            return round(float(hist["Close"].iloc[-1]), 2)
-        
-        if not symbol.endswith(".TWO"):
-            ticker_two = yf.Ticker(f"{symbol.split('.')[0]}.TWO")
-            hist_two = ticker_two.history(period="1d")
-            if not hist_two.empty:
-                return round(float(hist_two["Close"].iloc[-1]), 2)
-    except Exception:
-        pass
+    # 建立嘗試的代號清單（支援純數字台股上市 .TW、上櫃 .TWO 或美股代號）
+    symbols_to_try = []
+    if symbol.endswith(".TW") or symbol.endswith(".TWO"):
+        symbols_to_try = [symbol]
+    elif symbol.isdigit() or any(c.isdigit() for c in symbol):
+        symbols_to_try = [f"{symbol}.TW", f"{symbol}.TWO"]
+    else:
+        symbols_to_try = [symbol, f"{symbol}.TW", f"{symbol}.TWO"]
+
+    for sym in symbols_to_try:
+        try:
+            ticker = yf.Ticker(sym)
+            # 抓取最近 5 天資料，避開週末與休市無數據問題
+            hist = ticker.history(period="5d")
+            if not hist.empty and "Close" in hist.columns:
+                valid_closes = hist["Close"].dropna()
+                if not valid_closes.empty:
+                    return round(float(valid_closes.iloc[-1]), 2)
+        except Exception:
+            continue
     return 0.0
 
 # --- 初始化 Session State 資料庫 ---
@@ -109,7 +112,7 @@ if "pledges" not in st.session_state:
 if "dialog_targets" not in st.session_state:
     st.session_state.dialog_targets = []
 
-# --- 彈窗表單對話盒 (解決問題 1 & 2) ---
+# --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
@@ -252,7 +255,7 @@ for item in st.session_state.pledges:
 overall_maintenance_ratio = (total_collateral_value / total_loan_amount * 100) if total_loan_amount > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板 (問題 3: 顯示 5 欄完整資產與利息看板) ---
+# --- 頂部儀表板 ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
@@ -277,7 +280,6 @@ with header_col1:
     st.subheader("📋 質押專案彙整總表")
 with header_col2:
     if st.button("➕ 新增質押專案", type="primary", use_container_width=True):
-        # 徹底清空暫存，預設一筆空白轉投資標的
         st.session_state.dialog_targets = [{
             "target_code": "",
             "target_sheets": 1.0,
