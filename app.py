@@ -47,20 +47,7 @@ div[data-testid="stFormSubmitButton"] > button:hover {
     box-shadow: 0 4px 8px rgba(25, 118, 210, 0.2) !important;
 }
 
-/* 卡片排版與垂直置中 */
-.project-row-container {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background-color: #ffffff;
-    border-radius: 8px;
-    padding: 14px 18px;
-    margin-bottom: 12px;
-    border: 1px solid #e0e0e0;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.03);
-    gap: 15px;
-}
-
+/* 卡片排版 */
 .project-card-grid {
     flex-grow: 1;
     display: grid;
@@ -70,10 +57,6 @@ div[data-testid="stFormSubmitButton"] > button:hover {
 }
 
 @media (max-width: 900px) {
-    .project-row-container {
-        flex-direction: column;
-        align-items: stretch;
-    }
     .project-card-grid {
         grid-template-columns: 1fr;
         gap: 8px;
@@ -125,7 +108,7 @@ def parse_sheet_date(date_val) -> date:
             return date.today()
 
 def load_pledges_from_cloud():
-    """從 Google Sheets 讀取專案資料（支援全字元名稱）"""
+    """從 Google Sheets 讀取專案資料"""
     if "AKfycb" not in GSHEET_API_URL:
         return None
     try:
@@ -174,7 +157,7 @@ def load_pledges_from_cloud():
     return None
 
 def save_pledges_to_cloud(pledges_list):
-    """將專案資料即時寫入 Google Sheets（支援文字、純數字、符號任意名稱）"""
+    """將專案資料即時寫入 Google Sheets"""
     if "AKfycb" not in GSHEET_API_URL:
         return False, "尚未設定 Google Sheets API 網址"
     try:
@@ -183,7 +166,7 @@ def save_pledges_to_cloud(pledges_list):
             p_code_norm = normalize_tw_code(p['pledge_code'])
             flat_data.append({
                 "id": int(p["id"]),
-                "project_name": f"'{str(p['project_name']).strip()}", # 加單引號防試算表將純數字/符號轉換型別
+                "project_name": f"'{str(p['project_name']).strip()}",
                 "pledge_code": f"'{p_code_norm}",
                 "pledge_sheets": float(p["pledge_sheets"]),
                 "pledge_cost": float(p["pledge_cost"]),
@@ -267,18 +250,20 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
-# --- 彈窗表單對話盒 ---
+# --- 彈窗表單對話盒 (專屬 Key 隔離防串位) ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
+    dlg_id = str(edit_item["id"]) if is_edit else "new"
+
     curr_targets = [dict(t) for t in edit_item.get("targets", [])] if is_edit else [{
         "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
     }]
     if not curr_targets:
         curr_targets = [{"target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0}]
 
-    if "cur_dlg_targets" not in st.session_state:
-        st.session_state.cur_dlg_targets = curr_targets
+    if f"cur_dlg_targets_{dlg_id}" not in st.session_state:
+        st.session_state[f"cur_dlg_targets_{dlg_id}"] = curr_targets
 
     init_name = str(edit_item["project_name"]) if is_edit else ""
     if "T" in init_name and "Z" in init_name and len(init_name) > 20:
@@ -286,37 +271,38 @@ def project_form_dialog(edit_item=None):
 
     st.markdown(f"#### {'✏️ 修改質押專案：' + init_name if is_edit else '➕ 建立全新質押專案'}")
     
-    with st.form(key="pledge_modal_form"):
-        p_name = st.text_input("專案名稱 (支援中英文、純數字與任意符號)", value=init_name if init_name else "新質押專案")
+    with st.form(key=f"pledge_modal_form_{dlg_id}"):
+        p_name = st.text_input("專案名稱 (支援中英文、純數字與任意符號)", value=init_name if init_name else "新質押專案", key=f"f_name_{dlg_id}")
         
         col1, col2 = st.columns(2)
         with col1:
             p_code_val = str(edit_item["pledge_code"]) if is_edit else ""
             if p_code_val == "0":
                 p_code_val = "0"
-            p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_val)
-            p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5)
-            p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0)
+            p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_val, key=f"f_code_{dlg_id}")
+            p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"f_sheets_{dlg_id}")
+            p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_id}")
         with col2:
-            p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0)
-            p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01)
-            p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today())
+            p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
+            p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"f_rate_{dlg_id}")
+            p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"f_date_{dlg_id}")
         
         st.markdown("---")
         st.markdown("##### 🎯 轉投資標的設定")
         
         updated_targets = []
-        for idx, t in enumerate(st.session_state.cur_dlg_targets):
+        target_list = st.session_state[f"cur_dlg_targets_{dlg_id}"]
+        for idx, t in enumerate(target_list):
             st.markdown(f"**轉投資標的 #{idx+1}**")
             tc1, tc2, tc3, tc4 = st.columns(4)
             with tc1:
-                t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"d_tc_{idx}")
+                t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"d_tc_{dlg_id}_{idx}")
             with tc2:
-                t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"d_ts_{idx}")
+                t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"d_ts_{dlg_id}_{idx}")
             with tc3:
-                t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"d_tcost_{idx}")
+                t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"d_tcost_{dlg_id}_{idx}")
             with tc4:
-                t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"d_tdiv_{idx}")
+                t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"d_tdiv_{dlg_id}_{idx}")
             
             updated_targets.append({
                 "target_code": normalize_tw_code(t_code),
@@ -354,30 +340,30 @@ def project_form_dialog(edit_item=None):
                 st.session_state.pledges.append(new_project)
             
             save_pledges_to_cloud(st.session_state.pledges)
-            if "cur_dlg_targets" in st.session_state:
-                del st.session_state.cur_dlg_targets
+            if f"cur_dlg_targets_{dlg_id}" in st.session_state:
+                del st.session_state[f"cur_dlg_targets_{dlg_id}"]
             st.success("✅ 專案已儲存並同步至雲端！")
             st.rerun()
 
     b_col1, b_col2, b_col3 = st.columns([1, 1, 1])
     with b_col1:
-        if st.button("➕ 增加轉投資標的", use_container_width=True):
-            st.session_state.cur_dlg_targets.append({
+        if st.button("➕ 增加轉投資標的", key=f"btn_add_t_{dlg_id}", use_container_width=True):
+            st.session_state[f"cur_dlg_targets_{dlg_id}"].append({
                 "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
             })
             st.rerun()
     with b_col2:
-        if len(st.session_state.cur_dlg_targets) > 1:
-            if st.button("🗑️ 減少轉投資標的", use_container_width=True):
-                st.session_state.cur_dlg_targets.pop()
+        if len(st.session_state[f"cur_dlg_targets_{dlg_id}"]) > 1:
+            if st.button("🗑️ 減少轉投資標的", key=f"btn_rm_t_{dlg_id}", use_container_width=True):
+                st.session_state[f"cur_dlg_targets_{dlg_id}"].pop()
                 st.rerun()
     with b_col3:
         if is_edit:
-            if st.button("❌ 刪除此專案", use_container_width=True):
+            if st.button("❌ 刪除此專案", key=f"btn_del_p_{dlg_id}", use_container_width=True):
                 st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != edit_item["id"]]
                 save_pledges_to_cloud(st.session_state.pledges)
-                if "cur_dlg_targets" in st.session_state:
-                    del st.session_state.cur_dlg_targets
+                if f"cur_dlg_targets_{dlg_id}" in st.session_state:
+                    del st.session_state[f"cur_dlg_targets_{dlg_id}"]
                 st.rerun()
 
 # --- 資料計算與彙整 ---
@@ -495,8 +481,8 @@ with header_col1:
     st.subheader("📋 質押專案彙整總表")
 with header_col2:
     if st.button("➕ 新增質押專案", key="btn_add_proj", help="點擊建立新的質押套利專案", use_container_width=True):
-        if "cur_dlg_targets" in st.session_state:
-            del st.session_state.cur_dlg_targets
+        if "cur_dlg_targets_new" in st.session_state:
+            del st.session_state["cur_dlg_targets_new"]
         project_form_dialog(None)
 
 if project_display_data:
@@ -512,7 +498,6 @@ if project_display_data:
             arb_color = "#333"
             arb_sign = ""
 
-        # 使用外層 Flex 容器實現左右對齊 + 編輯按鈕垂直完美置中
         c_card, c_btn = st.columns([11, 1.2])
         with c_card:
             card_html = f"""
@@ -541,11 +526,11 @@ if project_display_data:
             """
             st.markdown(card_html, unsafe_allow_html=True)
         with c_btn:
-            # 透過自定義置中包裝
             st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
             if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", use_container_width=True):
-                if "cur_dlg_targets" in st.session_state:
-                    del st.session_state.cur_dlg_targets
+                p_dlg_id = str(r['id'])
+                if f"cur_dlg_targets_{p_dlg_id}" in st.session_state:
+                    del st.session_state[f"cur_dlg_targets_{p_dlg_id}"]
                 project_form_dialog(r["item_obj"])
 else:
     st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
