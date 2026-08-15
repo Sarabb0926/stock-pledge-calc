@@ -36,7 +36,8 @@ st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置�
 # ==============================================================================
 # 🔗 請將下方引號內的網址換成你的 Google Apps Script 網址
 # ==============================================================================
-GSHEET_API_URL = "https://script.google.com/macros/s/AKfycby-8R2n7t_l7oX26KjQa1go6PlgzdAZ975prldxzsav4QVHhvdaoDWr5dn5sWBrEDW1ww/exec"
+# 自動讀取 Streamlit 後台 Secrets，若沒有才使用預設值
+GSHEET_API_URL = st.secrets.get("GSHEET_API_URL", "https://script.google.com/macros/s/AKfycb.../exec")
 # ==============================================================================
 
 def normalize_tw_code(code_str: str) -> str:
