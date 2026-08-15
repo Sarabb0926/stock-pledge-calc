@@ -303,7 +303,8 @@ for item in st.session_state.pledges:
         "arbitrage": net_arbitrage
     })
 
-overall_maintenance_ratio = (total_collateral_value / total_loan_amount * 100) if total_loan_amount > 0 else 0
+total_liability = total_loan_amount + total_interest_paid
+overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
 # --- 頂部儀表板 ---
