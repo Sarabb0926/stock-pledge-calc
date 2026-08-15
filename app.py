@@ -8,6 +8,28 @@ import requests
 # 頁面配置
 st.set_page_config(page_title="股票質押與實質套利筆記本", page_icon="📈", layout="wide")
 
+# 自定義橘白配色按鈕與排版樣式
+st.markdown("""
+<style>
+div.stButton > button.orange-btn {
+    background-color: #ff6b22 !important;
+    color: #ffffff !important;
+    border: none !important;
+    font-weight: bold !important;
+    font-size: 15px !important;
+    padding: 0.45rem 1.2rem !important;
+    border-radius: 8px !important;
+    box-shadow: 0 2px 6px rgba(255, 107, 34, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+div.stButton > button.orange-btn:hover {
+    background-color: #e55a15 !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 10px rgba(255, 107, 34, 0.4) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📈 股票質押與實質套利筆記本 (Google Sheets 雲端連線版)")
 st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置即時同步 · 整戶維持率監控")
 
@@ -18,10 +40,10 @@ GSHEET_API_URL = "https://script.google.com/macros/s/AKfycby-8R2n7t_l7oX26KjQa1g
 # ==============================================================================
 
 def normalize_tw_code(code_str: str) -> str:
-    """自動修復被 Google Sheets 吞掉開頭 00 的台股/ETF 代號"""
+    """自動修復被 Google Sheets 吞掉開頭 00 的台股/ETF 代號，並支援 0 或空白判定為無"""
     c = str(code_str).strip().upper()
-    if not c:
-        return ""
+    if not c or c in ["0", "NONE", "NULL", "無", "NAN"]:
+        return "0"
     if c.isdigit():
         if len(c) <= 2:
             return c.zfill(4)   # 50 -> 0050, 56 -> 0056
@@ -45,18 +67,20 @@ def load_pledges_from_cloud():
                     
                     fixed_targets = []
                     for t in targets:
-                        fixed_targets.append({
-                            "target_code": normalize_tw_code(t.get("target_code", "")),
-                            "target_sheets": float(t.get("target_sheets", 1.0)),
-                            "target_cost": float(t.get("target_cost", 0)),
-                            "dividends_received": float(t.get("dividends_received", 0))
-                        })
+                        code_norm = normalize_tw_code(t.get("target_code", ""))
+                        if code_norm != "0":
+                            fixed_targets.append({
+                                "target_code": code_norm,
+                                "target_sheets": float(t.get("target_sheets", 1.0)),
+                                "target_cost": float(t.get("target_cost", 0)),
+                                "dividends_received": float(t.get("dividends_received", 0))
+                            })
 
                     parsed_list.append({
                         "id": int(row.get("id", 1)),
                         "project_name": str(row.get("project_name", "質押專案")),
-                        "pledge_code": normalize_tw_code(row.get("pledge_code", "")),
-                        "pledge_sheets": float(row.get("pledge_sheets", 1.0)),
+                        "pledge_code": normalize_tw_code(row.get("pledge_code", "0")),
+                        "pledge_sheets": float(row.get("pledge_sheets", 0.0)),
                         "pledge_cost": float(row.get("pledge_cost", 0)),
                         "loan_amount": float(row.get("loan_amount", 0)),
                         "interest_rate": float(row.get("interest_rate", 2.3)),
@@ -75,10 +99,11 @@ def save_pledges_to_cloud(pledges_list):
     try:
         flat_data = []
         for p in pledges_list:
+            p_code_norm = normalize_tw_code(p['pledge_code'])
             flat_data.append({
                 "id": p["id"],
                 "project_name": p["project_name"],
-                "pledge_code": f"'{normalize_tw_code(p['pledge_code'])}",  # 加單引號強制 Google Sheets 視為純文字保留 00
+                "pledge_code": f"'{p_code_norm}",
                 "pledge_sheets": p["pledge_sheets"],
                 "pledge_cost": p["pledge_cost"],
                 "loan_amount": p["loan_amount"],
@@ -94,11 +119,11 @@ def save_pledges_to_cloud(pledges_list):
     except Exception as e:
         return False, str(e)
 
-# --- 🚀 超穩即時股價 API (Yahoo 原生 JSON + TWSE/TPEX 備援) ---
+# --- 🚀 即時股價 API ---
 @st.cache_data(ttl=180)
 def get_stock_price(symbol: str) -> float:
     raw_code = normalize_tw_code(symbol)
-    if not raw_code:
+    if not raw_code or raw_code == "0":
         return 0.0
 
     headers = {
@@ -113,7 +138,6 @@ def get_stock_price(symbol: str) -> float:
     else:
         candidates = [raw_code, f"{raw_code}.TW", f"{raw_code}.TWO"]
 
-    # 1. 管道一：Yahoo Chart API 直接穿透
     for sym in candidates:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=5d&interval=1d"
@@ -134,7 +158,6 @@ def get_stock_price(symbol: str) -> float:
         except Exception:
             pass
 
-    # 2. 管道二：yfinance 套件備援
     for sym in candidates:
         try:
             ticker = yf.Ticker(sym)
@@ -159,6 +182,13 @@ if "pledges" not in st.session_state:
 if "dialog_targets" not in st.session_state:
     st.session_state.dialog_targets = []
 
+# --- 側邊欄：自定義維持率警戒值 ---
+with st.sidebar:
+    st.header("⚙️ 風險警戒設定")
+    custom_warn_ratio = st.slider("⚠️ 警惕維持率警戒線 (%)", min_value=135, max_value=200, value=150, step=5)
+    custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=140, value=130, step=1)
+    st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳警告，低於 {custom_warn_ratio}% 進入預警區。")
+
 # --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
@@ -170,8 +200,11 @@ def project_form_dialog(edit_item=None):
     p_name = st.text_input("專案名稱", value=edit_item["project_name"] if is_edit else "新質押專案", key=f"f_name_{dlg_id}")
     col1, col2 = st.columns(2)
     with col1:
-        p_code = st.text_input("質押標的代號 (如: 00878, 0050)", value=edit_item["pledge_code"] if is_edit else "", key=f"f_code_{dlg_id}")
-        p_sheets = st.number_input("質押張數", min_value=0.01, value=float(edit_item["pledge_sheets"]) if is_edit else 1.0, step=0.5, key=f"f_sheets_{dlg_id}")
+        p_code_input = edit_item["pledge_code"] if is_edit else ""
+        if p_code_input == "0":
+            p_code_input = "0"
+        p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_input, key=f"f_code_{dlg_id}")
+        p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"f_sheets_{dlg_id}")
         p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_id}")
     with col2:
         p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
@@ -215,33 +248,43 @@ def project_form_dialog(edit_item=None):
                 st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("💾 儲存並同步至 Google Sheets", type="primary", use_container_width=True):
-        new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
-        valid_targets = [t for t in updated_targets if t["target_code"].strip() != ""]
-        
-        new_project = {
-            "id": new_id,
-            "project_name": p_name,
-            "pledge_code": normalize_tw_code(p_code),
-            "pledge_sheets": p_sheets,
-            "pledge_cost": p_cost,
-            "loan_amount": p_loan,
-            "interest_rate": p_rate,
-            "pledge_date": p_date,
-            "targets": valid_targets
-        }
-        
+    c_btn1, c_btn2 = st.columns([3, 1])
+    with c_btn1:
+        if st.button("💾 儲存並同步至 Google Sheets", type="primary", use_container_width=True):
+            new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
+            valid_targets = [t for t in updated_targets if t["target_code"] not in ["0", ""]]
+            
+            clean_pledge_code = normalize_tw_code(p_code)
+            new_project = {
+                "id": new_id,
+                "project_name": p_name,
+                "pledge_code": clean_pledge_code,
+                "pledge_sheets": p_sheets if clean_pledge_code != "0" else 0.0,
+                "pledge_cost": p_cost if clean_pledge_code != "0" else 0,
+                "loan_amount": p_loan,
+                "interest_rate": p_rate,
+                "pledge_date": p_date,
+                "targets": valid_targets
+            }
+            
+            if is_edit:
+                for i, p in enumerate(st.session_state.pledges):
+                    if p["id"] == edit_item["id"]:
+                        st.session_state.pledges[i] = new_project
+                        break
+            else:
+                st.session_state.pledges.append(new_project)
+            
+            save_pledges_to_cloud(st.session_state.pledges)
+            st.success("✅ 專案已儲存並同步至雲端！")
+            st.rerun()
+    
+    with c_btn2:
         if is_edit:
-            for i, p in enumerate(st.session_state.pledges):
-                if p["id"] == edit_item["id"]:
-                    st.session_state.pledges[i] = new_project
-                    break
-        else:
-            st.session_state.pledges.append(new_project)
-        
-        save_pledges_to_cloud(st.session_state.pledges)
-        st.success("✅ 專案已儲存並同步至雲端！")
-        st.rerun()
+            if st.button("🗑️ 刪除專案", use_container_width=True):
+                st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != edit_item["id"]]
+                save_pledges_to_cloud(st.session_state.pledges)
+                st.rerun()
 
 # --- 資料計算與彙整 ---
 total_collateral_value = 0.0
@@ -251,12 +294,22 @@ total_target_value = 0.0
 total_target_cost = 0.0
 total_dividends = 0.0
 
-table_rows = []
+project_display_data = []
 
 for item in st.session_state.pledges:
     p_code_norm = normalize_tw_code(item["pledge_code"])
-    p_price = get_stock_price(p_code_norm)
-    current_collateral_val = p_price * item["pledge_sheets"] * 1000
+    
+    if p_code_norm == "0" or item.get("pledge_sheets", 0) == 0:
+        current_collateral_val = 0.0
+        p_price = 0.0
+        pledge_display_str = "無 (動用既有擔保品)"
+        pledge_val_str = "$0"
+    else:
+        p_price = get_stock_price(p_code_norm)
+        current_collateral_val = p_price * item["pledge_sheets"] * 1000
+        pledge_display_str = f"{p_code_norm} ({item['pledge_sheets']}張)"
+        pledge_val_str = f"${current_collateral_val:,.0f} (@${p_price})"
+
     total_collateral_value += current_collateral_val
     total_loan_amount += item["loan_amount"]
 
@@ -272,7 +325,7 @@ for item in st.session_state.pledges:
 
     for t in item["targets"]:
         t_code_norm = normalize_tw_code(t.get("target_code", ""))
-        if not t_code_norm:
+        if not t_code_norm or t_code_norm == "0":
             continue
         t_price = get_stock_price(t_code_norm)
         c_val = t_price * t.get("target_sheets", 1.0) * 1000
@@ -288,12 +341,13 @@ for item in st.session_state.pledges:
     target_unrealized_gain = proj_target_val - proj_target_cost
     net_arbitrage = (target_unrealized_gain + proj_dividends) - accrued_interest
 
-    table_rows.append({
+    project_display_data.append({
+        "item_obj": item,
         "id": item["id"],
         "name": item["project_name"],
-        "pledge": f"{p_code_norm} ({item['pledge_sheets']}張)",
-        "cost": f"${item['pledge_cost']:,.0f}",
-        "pledge_val": f"${current_collateral_val:,.0f} (@${p_price})",
+        "pledge": pledge_display_str,
+        "cost": f"${item['pledge_cost']:,.0f}" if p_code_norm != "0" else "$0",
+        "pledge_val": pledge_val_str,
         "loan": f"${item['loan_amount']:,.0f}",
         "days_rate": f"{days_pledged}天 / {item['interest_rate']}%",
         "interest": f"${accrued_interest:,.0f}",
@@ -303,23 +357,24 @@ for item in st.session_state.pledges:
         "arbitrage": net_arbitrage
     })
 
+# ⚖️ 券商標準公式：總負債 = 借款金額 + 累計利息
 total_liability = total_loan_amount + total_interest_paid
 overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板 ---
+# --- 頂部儀表板 (支援自定義警戒線) ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
 m2.metric("💳 總借款金額", f"${total_loan_amount:,.0f}")
 m3.metric("💸 累計總質借利息", f"${total_interest_paid:,.0f}", delta=f"總配息 ${total_dividends:,.0f}")
 
-if overall_maintenance_ratio < 130:
-    ratio_delta = "🚨 低於130% 追繳警告！"
-elif overall_maintenance_ratio < 160:
-    ratio_delta = "⚠️ 警惕區域 (<160%)"
+if overall_maintenance_ratio < custom_danger_ratio:
+    ratio_delta = f"🚨 低於 {custom_danger_ratio}% 追繳警告！"
+elif overall_maintenance_ratio < custom_warn_ratio:
+    ratio_delta = f"⚠️ 警惕區域 (<{custom_warn_ratio}%)"
 else:
-    ratio_delta = "✅ 安全範圍"
+    ratio_delta = f"✅ 安全範圍 (>{custom_warn_ratio}%)"
 
 m4.metric("⚡ 整戶總維持率", f"{overall_maintenance_ratio:.2f}%", delta=ratio_delta)
 m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
@@ -327,11 +382,12 @@ m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
 st.divider()
 
 # --- 彙整總表與操作按鈕 ---
-header_col1, header_col2 = st.columns([4, 1])
+header_col1, header_col2 = st.columns([4, 1.2])
 with header_col1:
     st.subheader("📋 質押專案彙整總表")
 with header_col2:
-    if st.button("➕ 新增質押專案", type="primary", use_container_width=True):
+    # 橘白配色新增按鈕
+    if st.button("➕ 新增質押專案", key="btn_add_proj", help="點擊建立新的質押套利專案", use_container_width=True):
         st.session_state.dialog_targets = [{
             "target_code": "",
             "target_sheets": 1.0,
@@ -340,88 +396,56 @@ with header_col2:
         }]
         project_form_dialog(None)
 
-if table_rows:
-    table_body = ""
-    for r in table_rows:
+if project_display_data:
+    # 渲染卡片式/表格專案，每列自帶鉛筆編輯按鈕
+    for r in project_display_data:
         arb_val = r["arbitrage"]
         if arb_val > 0:
-            arb_html = f"<b style='color:#ff4d4f;'>+${arb_val:,.0f}</b>"
+            arb_color = "#ff4d4f"
+            arb_sign = "+"
         elif arb_val < 0:
-            arb_html = f"<b style='color:#52c41a;'>-${abs(arb_val):,.0f}</b>"
+            arb_color = "#52c41a"
+            arb_sign = "-"
         else:
-            arb_html = "$0"
+            arb_color = "#333"
+            arb_sign = ""
 
-        table_body += f"""<tr>
-<td><b>{r['name']}</b></td>
-<td>{r['pledge']}</td>
-<td>{r['cost']}</td>
-<td>{r['pledge_val']}</td>
-<td>{r['loan']}</td>
-<td>{r['days_rate']}</td>
-<td>{r['interest']}</td>
-<td>{r['targets']}</td>
-<td>{r['target_val']}</td>
-<td>{r['dividends']}</td>
-<td>{arb_html}</td>
-</tr>"""
-
-    full_html = f"""
-    <div style="overflow-x: auto;">
-        <table style="width:100%; border-collapse:collapse; text-align:center; font-size:14px; background-color:#ffffff; color:#333333; border-radius:8px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-            <thead>
-                <tr style="background-color:#1e88e5; color:#ffffff; font-weight:bold;">
-                    <th style="padding:12px 8px;">專案名稱</th>
-                    <th style="padding:12px 8px;">質押標的</th>
-                    <th style="padding:12px 8px;">原始成本</th>
-                    <th style="padding:12px 8px;">當前質押市值</th>
-                    <th style="padding:12px 8px;">借款金額</th>
-                    <th style="padding:12px 8px;">天數/利率</th>
-                    <th style="padding:12px 8px;">至今利息</th>
-                    <th style="padding:12px 8px;">轉投資標的</th>
-                    <th style="padding:12px 8px;">轉投資市值</th>
-                    <th style="padding:12px 8px;">已領股息</th>
-                    <th style="padding:12px 8px;">🔥 實質淨套利</th>
-                </tr>
-            </thead>
-            <tbody>
-                {table_body}
-            </tbody>
-        </table>
-    </div>
-    """
-    st.markdown(full_html, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.subheader("⚙️ 專案管理操作")
-    col_sel, col_act1, col_act2 = st.columns([3, 1, 1])
-    
-    with col_sel:
-        selected_proj_id = st.selectbox(
-            "選擇要操作的專案：", 
-            options=[p["id"] for p in st.session_state.pledges],
-            format_func=lambda x: next((p["project_name"] for p in st.session_state.pledges if p["id"] == x), "")
-        )
-    
-    with col_act1:
-        st.write("")
-        st.write("")
-        if st.button("✏️ 編輯選取專案", use_container_width=True):
-            target_p = next((p for p in st.session_state.pledges if p["id"] == selected_proj_id), None)
-            if target_p:
+        c_card, c_btn = st.columns([11, 1])
+        with c_card:
+            card_html = f"""
+            <div style="background-color: #ffffff; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.04); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <div style="min-width: 140px;">
+                    <span style="font-size: 15px; font-weight: bold; color: #1e88e5;">{r['name']}</span><br>
+                    <span style="font-size: 12px; color: #888;">{r['days_rate']}</span>
+                </div>
+                <div style="min-width: 120px; font-size: 13px;">
+                    <b>質押標的：</b>{r['pledge']}<br>
+                    <b>市值：</b>{r['pledge_val']}
+                </div>
+                <div style="min-width: 110px; font-size: 13px;">
+                    <b>借款金額：</b>{r['loan']}<br>
+                    <b>累計利息：</b><span style="color:#d9534f;">{r['interest']}</span>
+                </div>
+                <div style="min-width: 140px; font-size: 13px;">
+                    <b>轉投資：</b>{r['targets']}<br>
+                    <b>市值：</b>{r['target_val']}
+                </div>
+                <div style="min-width: 110px; font-size: 13px;">
+                    <b>已領股息：</b><span style="color:#2e7d32;">{r['dividends']}</span><br>
+                    <b>實質淨套利：</b><b style="color:{arb_color}; font-size:14px;">{arb_sign}${abs(arb_val):,.0f}</b>
+                </div>
+            </div>
+            """
+            st.markdown(card_html, unsafe_allow_html=True)
+        with c_btn:
+            st.write("")
+            if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", use_container_width=True):
+                target_p = r["item_obj"]
                 st.session_state.dialog_targets = [dict(t) for t in target_p.get("targets", [])]
                 if not st.session_state.dialog_targets:
                     st.session_state.dialog_targets = [{
                         "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
                     }]
                 project_form_dialog(target_p)
-
-    with col_act2:
-        st.write("")
-        st.write("")
-        if st.button("🗑️ 刪除選取專案", use_container_width=True):
-            st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != selected_proj_id]
-            save_pledges_to_cloud(st.session_state.pledges)
-            st.success("已成功刪除專案並同步 Google Sheets！")
-            st.rerun()
 else:
     st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
