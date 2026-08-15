@@ -34,17 +34,19 @@ st.title("📈 股票質押與實質套利筆記本 (Google Sheets 雲端連線�
 st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置即時同步 · 整戶維持率監控")
 
 # ==============================================================================
-# 🔗 請將下方引號內的網址換成你的 Google Apps Script 網址
+# 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
 # ==============================================================================
-# 自動讀取 Streamlit 後台 Secrets，若沒有才使用預設值
-GSHEET_API_URL = st.secrets.get("GSHEET_API_URL", "https://script.google.com/macros/s/AKfycb.../exec")
+DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycb...請貼上你的網址.../exec"
+GSHEET_API_URL = st.secrets.get("GSHEET_API_URL", DEFAULT_API_URL)
 # ==============================================================================
 
 def normalize_tw_code(code_str: str) -> str:
     """自動修復被 Google Sheets 吞掉開頭 00 的台股/ETF 代號，並支援 0 或空白判定為無"""
     c = str(code_str).strip().upper()
-    if not c or c in ["0", "NONE", "NULL", "無", "NAN"]:
+    if not c or c in ["0", "NONE", "NULL", "無", "NAN", "''"]:
         return "0"
+    # 去除可能殘留的單引號
+    c = c.replace("'", "")
     if c.isdigit():
         if len(c) <= 2:
             return c.zfill(4)   # 50 -> 0050, 56 -> 0056
@@ -77,9 +79,13 @@ def load_pledges_from_cloud():
                                 "dividends_received": float(t.get("dividends_received", 0))
                             })
 
+                    p_name = str(row.get("project_name", "")).strip()
+                    if not p_name:
+                        p_name = f"專案 #{row.get('id', 1)}"
+
                     parsed_list.append({
                         "id": int(row.get("id", 1)),
-                        "project_name": str(row.get("project_name", "質押專案")),
+                        "project_name": p_name,
                         "pledge_code": normalize_tw_code(row.get("pledge_code", "0")),
                         "pledge_sheets": float(row.get("pledge_sheets", 0.0)),
                         "pledge_cost": float(row.get("pledge_cost", 0)),
@@ -102,13 +108,13 @@ def save_pledges_to_cloud(pledges_list):
         for p in pledges_list:
             p_code_norm = normalize_tw_code(p['pledge_code'])
             flat_data.append({
-                "id": p["id"],
-                "project_name": p["project_name"],
+                "id": int(p["id"]),
+                "project_name": str(p["project_name"]).strip(),
                 "pledge_code": f"'{p_code_norm}",
-                "pledge_sheets": p["pledge_sheets"],
-                "pledge_cost": p["pledge_cost"],
-                "loan_amount": p["loan_amount"],
-                "interest_rate": p["interest_rate"],
+                "pledge_sheets": float(p["pledge_sheets"]),
+                "pledge_cost": float(p["pledge_cost"]),
+                "loan_amount": float(p["loan_amount"]),
+                "interest_rate": float(p["interest_rate"]),
                 "pledge_date": p["pledge_date"].strftime("%Y-%m-%d"),
                 "targets_json": json.dumps(p["targets"], ensure_ascii=False)
             })
@@ -190,27 +196,29 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=140, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳警告，低於 {custom_warn_ratio}% 進入預警區。")
 
-# --- 彈窗表單對話盒 ---
+# --- 彈窗表單對話盒 (加入防串名專屬 session key) ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
-    dlg_id = str(edit_item["id"]) if is_edit else "new"
+    dlg_unique_key = f"proj_{edit_item['id']}" if is_edit else "proj_new"
     
-    st.markdown(f"#### {'✏️ 修改質押專案：' + edit_item['project_name'] if is_edit else '➕ 建立全新質押專案'}")
+    st.markdown(f"#### {'✏️ 修改質押專案：' + str(edit_item['project_name']) if is_edit else '➕ 建立全新質押專案'}")
     
-    p_name = st.text_input("專案名稱", value=edit_item["project_name"] if is_edit else "新質押專案", key=f"f_name_{dlg_id}")
+    default_name = str(edit_item["project_name"]) if is_edit else ""
+    p_name = st.text_input("專案名稱", value=default_name, placeholder="例如：2026 質押套利計畫", key=f"f_name_{dlg_unique_key}")
+    
     col1, col2 = st.columns(2)
     with col1:
-        p_code_input = edit_item["pledge_code"] if is_edit else ""
+        p_code_input = str(edit_item["pledge_code"]) if is_edit else ""
         if p_code_input == "0":
             p_code_input = "0"
-        p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_input, key=f"f_code_{dlg_id}")
-        p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"f_sheets_{dlg_id}")
-        p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_id}")
+        p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_input, key=f"f_code_{dlg_unique_key}")
+        p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"f_sheets_{dlg_unique_key}")
+        p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_unique_key}")
     with col2:
-        p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
-        p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"f_rate_{dlg_id}")
-        p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"f_date_{dlg_id}")
+        p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_unique_key}")
+        p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"f_rate_{dlg_unique_key}")
+        p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"f_date_{dlg_unique_key}")
     
     st.markdown("---")
     st.markdown("##### 🎯 轉投資標的設定 (可新增多筆)")
@@ -220,13 +228,13 @@ def project_form_dialog(edit_item=None):
         st.markdown(f"**轉投資標的 #{idx+1}**")
         tc1, tc2, tc3, tc4 = st.columns(4)
         with tc1:
-            t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"dlg_t_code_{dlg_id}_{idx}")
+            t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"dlg_t_code_{dlg_unique_key}_{idx}")
         with tc2:
-            t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"dlg_t_sheets_{dlg_id}_{idx}")
+            t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"dlg_t_sheets_{dlg_unique_key}_{idx}")
         with tc3:
-            t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"dlg_t_cost_{dlg_id}_{idx}")
+            t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"dlg_t_cost_{dlg_unique_key}_{idx}")
         with tc4:
-            t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"dlg_t_div_{dlg_id}_{idx}")
+            t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"dlg_t_div_{dlg_unique_key}_{idx}")
         
         updated_targets.append({
             "target_code": normalize_tw_code(t_code),
@@ -255,10 +263,11 @@ def project_form_dialog(edit_item=None):
             new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
             valid_targets = [t for t in updated_targets if t["target_code"] not in ["0", ""]]
             
+            final_name = p_name.strip() if p_name.strip() else f"專案 #{new_id}"
             clean_pledge_code = normalize_tw_code(p_code)
             new_project = {
                 "id": new_id,
-                "project_name": p_name,
+                "project_name": final_name,
                 "pledge_code": clean_pledge_code,
                 "pledge_sheets": p_sheets if clean_pledge_code != "0" else 0.0,
                 "pledge_cost": p_cost if clean_pledge_code != "0" else 0,
@@ -345,7 +354,7 @@ for item in st.session_state.pledges:
     project_display_data.append({
         "item_obj": item,
         "id": item["id"],
-        "name": item["project_name"],
+        "name": str(item["project_name"]),
         "pledge": pledge_display_str,
         "cost": f"${item['pledge_cost']:,.0f}" if p_code_norm != "0" else "$0",
         "pledge_val": pledge_val_str,
@@ -363,7 +372,7 @@ total_liability = total_loan_amount + total_interest_paid
 overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板 (支援自定義警戒線) ---
+# --- 頂部儀表板 ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
@@ -387,7 +396,6 @@ header_col1, header_col2 = st.columns([4, 1.2])
 with header_col1:
     st.subheader("📋 質押專案彙整總表")
 with header_col2:
-    # 橘白配色新增按鈕
     if st.button("➕ 新增質押專案", key="btn_add_proj", help="點擊建立新的質押套利專案", use_container_width=True):
         st.session_state.dialog_targets = [{
             "target_code": "",
@@ -398,7 +406,6 @@ with header_col2:
         project_form_dialog(None)
 
 if project_display_data:
-    # 渲染卡片式/表格專案，每列自帶鉛筆編輯按鈕
     for r in project_display_data:
         arb_val = r["arbitrage"]
         if arb_val > 0:
