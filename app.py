@@ -8,7 +8,7 @@ import requests
 # 頁面配置
 st.set_page_config(page_title="股票質押與實質套利筆記本", page_icon="📈", layout="wide")
 
-# 自定義橘白配色按鈕與排版樣式
+# 自定義樣式（橘白按鈕 + 卡片等寬網格對齊）
 st.markdown("""
 <style>
 div.stButton > button.orange-btn {
@@ -26,6 +26,27 @@ div.stButton > button.orange-btn:hover {
     background-color: #e55a15 !important;
     color: #ffffff !important;
     box-shadow: 0 4px 10px rgba(255, 107, 34, 0.4) !important;
+}
+
+/* 專案卡片 Grid 等寬嚴格對齊排版 */
+.project-card {
+    background-color: #ffffff;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    border: 1px solid #e0e0e0;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.03);
+    display: grid;
+    grid-template-columns: 2fr 2fr 2fr 2.5fr 2fr;
+    gap: 15px;
+    align-items: center;
+}
+
+@media (max-width: 900px) {
+    .project-card {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -185,14 +206,14 @@ if "pledges" not in st.session_state:
     else:
         st.session_state.pledges = []
 
-# --- 側邊欄：自定義維持率警戒值 ---
+# --- 側邊欄：自定義維持率警戒值 (上限提升至 300%) ---
 with st.sidebar:
     st.header("⚙️ 風險警戒設定")
-    custom_warn_ratio = st.slider("⚠️ 警惕維持率警戒線 (%)", min_value=135, max_value=200, value=150, step=5)
-    custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=140, value=130, step=1)
-    st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳警告，低於 {custom_warn_ratio}% 進入預警區。")
+    custom_warn_ratio = st.slider("⚠️ 警惕維持率警戒線 (%)", min_value=130, max_value=300, value=160, step=5)
+    custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
+    st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
-# --- 彈窗表單對話盒 (使用表單封裝，徹底杜絕名稱串位) ---
+# --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
@@ -280,7 +301,6 @@ def project_form_dialog(edit_item=None):
             st.success("✅ 專案已儲存並同步至雲端！")
             st.rerun()
 
-    # 彈窗外輔助操作（增減標的 / 刪除專案）
     b_col1, b_col2, b_col3 = st.columns([1, 1, 1])
     with b_col1:
         if st.button("➕ 增加轉投資標的", use_container_width=True):
@@ -318,7 +338,7 @@ for item in st.session_state.pledges:
     if p_code_norm == "0" or item.get("pledge_sheets", 0) == 0:
         current_collateral_val = 0.0
         p_price = 0.0
-        pledge_display_str = "無 (動用既有擔保品)"
+        pledge_display_str = "無 (動用舊額度)"
         pledge_val_str = "$0"
     else:
         p_price = get_stock_price(p_code_norm)
@@ -378,21 +398,40 @@ total_liability = total_loan_amount + total_interest_paid
 overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板 ---
+# --- 頂部儀表板 (支援低於警戒值直接標註紅字) ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
 m2.metric("💳 總借款金額", f"${total_loan_amount:,.0f}")
 m3.metric("💸 累計總質借利息", f"${total_interest_paid:,.0f}", delta=f"總配息 ${total_dividends:,.0f}")
 
-if overall_maintenance_ratio < custom_danger_ratio:
-    ratio_delta = f"🚨 低於 {custom_danger_ratio}% 追繳警告！"
-elif overall_maintenance_ratio < custom_warn_ratio:
-    ratio_delta = f"⚠️ 警惕區域 (<{custom_warn_ratio}%)"
-else:
-    ratio_delta = f"✅ 安全範圍 (>{custom_warn_ratio}%)"
+# 判斷維持率警戒狀態
+is_danger = overall_maintenance_ratio < custom_danger_ratio
+is_warn = overall_maintenance_ratio < custom_warn_ratio
 
-m4.metric("⚡ 整戶總維持率", f"{overall_maintenance_ratio:.2f}%", delta=ratio_delta)
+if is_danger:
+    ratio_delta_text = f"🚨 低於 {custom_danger_ratio}% 追繳警告！"
+    delta_color_type = "inverse"
+elif is_warn:
+    ratio_delta_text = f"⚠️ 警惕區域 (<{custom_warn_ratio}%)"
+    delta_color_type = "inverse"
+else:
+    ratio_delta_text = f"✅ 安全範圍 (>{custom_warn_ratio}%)"
+    delta_color_type = "normal"
+
+with m4:
+    if is_danger or is_warn:
+        # 低於設定值時，透過 HTML 強制將數字與警告文字渲染為醒目紅字
+        st.markdown(f"""
+        <div style="padding: 2px 0;">
+            <div style="font-size: 14px; color: #555;">⚡ 整戶總維持率</div>
+            <div style="font-size: 28px; font-weight: bold; color: #d93025; line-height: 1.2;">{overall_maintenance_ratio:.2f}%</div>
+            <div style="font-size: 13px; color: #d93025; font-weight: 500; margin-top: 4px;">{ratio_delta_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.metric("⚡ 整戶總維持率", f"{overall_maintenance_ratio:.2f}%", delta=ratio_delta_text)
+
 m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
 
 st.divider()
@@ -423,26 +462,26 @@ if project_display_data:
         c_card, c_btn = st.columns([11, 1])
         with c_card:
             card_html = f"""
-            <div style="background-color: #ffffff; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.04); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-                <div style="min-width: 140px;">
-                    <span style="font-size: 15px; font-weight: bold; color: #1e88e5;">{r['name']}</span><br>
-                    <span style="font-size: 12px; color: #888;">{r['days_rate']}</span>
+            <div class="project-card">
+                <div>
+                    <div style="font-size: 15px; font-weight: bold; color: #1e88e5;">{r['name']}</div>
+                    <div style="font-size: 12px; color: #888; margin-top: 3px;">{r['days_rate']}</div>
                 </div>
-                <div style="min-width: 120px; font-size: 13px;">
-                    <b>質押標的：</b>{r['pledge']}<br>
-                    <b>市值：</b>{r['pledge_val']}
+                <div>
+                    <div style="font-size: 13px;"><b>質押：</b>{r['pledge']}</div>
+                    <div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r['pledge_val']}</div>
                 </div>
-                <div style="min-width: 110px; font-size: 13px;">
-                    <b>借款金額：</b>{r['loan']}<br>
-                    <b>累計利息：</b><span style="color:#d9534f;">{r['interest']}</span>
+                <div>
+                    <div style="font-size: 13px;"><b>借款：</b>{r['loan']}</div>
+                    <div style="font-size: 12px; color: #d9534f; margin-top: 3px;"><b>利息：</b>{r['interest']}</div>
                 </div>
-                <div style="min-width: 140px; font-size: 13px;">
-                    <b>轉投資：</b>{r['targets']}<br>
-                    <b>市值：</b>{r['target_val']}
+                <div>
+                    <div style="font-size: 13px;"><b>轉投資：</b>{r['targets']}</div>
+                    <div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r['target_val']}</div>
                 </div>
-                <div style="min-width: 110px; font-size: 13px;">
-                    <b>已領股息：</b><span style="color:#2e7d32;">{r['dividends']}</span><br>
-                    <b>實質淨套利：</b><b style="color:{arb_color}; font-size:14px;">{arb_sign}${abs(arb_val):,.0f}</b>
+                <div>
+                    <div style="font-size: 12px; color: #2e7d32;"><b>股息：</b>{r['dividends']}</div>
+                    <div style="font-size: 13px; margin-top: 3px;"><b>淨套利：</b><b style="color:{arb_color};">{arb_sign}${abs(arb_val):,.0f}</b></div>
                 </div>
             </div>
             """
