@@ -179,7 +179,6 @@ def load_pledges_from_cloud():
                                 "dividends_received": float(t.get("dividends_received", 0))
                             })
 
-                    # 解析多筆還款/繳息時間軸
                     r_json = row.get("repayments_json", "[]")
                     repayments = json.loads(r_json) if isinstance(r_json, str) else r_json
                     fixed_repayments = []
@@ -191,7 +190,6 @@ def load_pledges_from_cloud():
                                 "date": parse_sheet_date(r.get("date"))
                             })
 
-                    # 兼容舊版單一欄位
                     if not fixed_repayments:
                         old_repaid = float(row.get("repaid_amount", 0))
                         old_repaid_int = float(row.get("repaid_interest", 0))
@@ -235,7 +233,6 @@ def save_pledges_to_cloud(pledges_list):
         for p in pledges_list:
             p_code_norm = normalize_tw_code(p['pledge_code'])
             
-            # 將還款清單轉為 JSON 字串
             repayments_clean = []
             for r in p.get("repayments", []):
                 repayments_clean.append({
@@ -336,7 +333,7 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
-# --- 彈窗表單對話盒（含動態還款時間軸） ---
+# --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
@@ -362,6 +359,7 @@ def project_form_dialog(edit_item=None):
 
     st.markdown(f"#### {'✏️ 修改質押專案：' + init_name if is_edit else '➕ 建立全新質押專案'}")
     
+    # 1. 專案基本設定
     p_name = st.text_input("專案名稱", value=init_name if init_name else "新質押專案", key=f"inp_name_{dlg_id}")
     
     col1, col2 = st.columns(2)
@@ -386,44 +384,7 @@ def project_form_dialog(edit_item=None):
         p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"inp_rate_{dlg_id}")
         p_date = st.date_input("質押/存入開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"inp_date_{dlg_id}")
 
-    # --- 💵 還款與繳息時間軸模組 ---
-    st.markdown("---")
-    st.markdown("##### 💵 還款與繳息時間軸記錄")
-    st.caption("每次還本金或繳利息皆可在此新增一筆記錄，輸入錯誤可直接點右側 🗑️ 刪除。")
-
-    rep_list = st.session_state[f"cur_dlg_repayments_{dlg_id}"]
-    updated_repayments = []
-    
-    for r_idx, r in enumerate(rep_list):
-        rc1, rc2, rc3, rc4 = st.columns([1.5, 2, 2, 0.8])
-        with rc1:
-            r_type = st.selectbox("類型", options=["償還本金", "繳納利息"], index=0 if r.get("type") == "償還本金" else 1, key=f"r_type_{dlg_id}_{r_idx}")
-        with rc2:
-            r_date = st.date_input("日期", value=r.get("date", date.today()), key=f"r_date_{dlg_id}_{r_idx}")
-        with rc3:
-            r_amt = st.number_input("金額 (元)", min_value=0, value=int(r.get("amount", 0)), step=1000, key=f"r_amt_{dlg_id}_{r_idx}")
-        with rc4:
-            st.write("")
-            st.write("")
-            if st.button("🗑️", key=f"btn_del_rep_{dlg_id}_{r_idx}", help="刪除此筆還款記錄"):
-                st.session_state[f"cur_dlg_repayments_{dlg_id}"].pop(r_idx)
-                st.rerun()
-        
-        updated_repayments.append({
-            "type": r_type,
-            "date": r_date,
-            "amount": r_amt
-        })
-
-    if st.button("➕ 新增一筆還款/繳息記錄", key=f"btn_add_rep_{dlg_id}"):
-        st.session_state[f"cur_dlg_repayments_{dlg_id}"].append({
-            "type": "償還本金",
-            "date": date.today(),
-            "amount": 0
-        })
-        st.rerun()
-
-    # --- 🎯 轉投資標的模組 ---
+    # 2. 🎯 轉投資標的設定（移至還款前）
     st.markdown("---")
     st.markdown("##### 🎯 轉投資標的設定")
     
@@ -461,6 +422,43 @@ def project_form_dialog(edit_item=None):
                 st.session_state[f"cur_dlg_targets_{dlg_id}"].pop()
                 st.rerun()
 
+    # 3. 💵 還款與繳息時間軸模組（移至轉投資下方）
+    st.markdown("---")
+    st.markdown("##### 💵 還款與繳息時間軸記錄")
+    st.caption("每次還本金或繳利息皆可在此新增一筆記錄，輸入錯誤可直接點右側 🗑️ 刪除。")
+
+    rep_list = st.session_state[f"cur_dlg_repayments_{dlg_id}"]
+    updated_repayments = []
+    
+    for r_idx, r in enumerate(rep_list):
+        rc1, rc2, rc3, rc4 = st.columns([1.5, 2, 2, 0.8])
+        with rc1:
+            r_type = st.selectbox("類型", options=["償還本金", "繳納利息"], index=0 if r.get("type") == "償還本金" else 1, key=f"r_type_{dlg_id}_{r_idx}")
+        with rc2:
+            r_date = st.date_input("日期", value=r.get("date", date.today()), key=f"r_date_{dlg_id}_{r_idx}")
+        with rc3:
+            r_amt = st.number_input("金額 (元)", min_value=0, value=int(r.get("amount", 0)), step=1000, key=f"r_amt_{dlg_id}_{r_idx}")
+        with rc4:
+            st.write("")
+            st.write("")
+            if st.button("🗑️", key=f"btn_del_rep_{dlg_id}_{r_idx}", help="刪除此筆還款記錄"):
+                st.session_state[f"cur_dlg_repayments_{dlg_id}"].pop(r_idx)
+                st.rerun()
+        
+        updated_repayments.append({
+            "type": r_type,
+            "date": r_date,
+            "amount": r_amt
+        })
+
+    if st.button("➕ 新增一筆還款/繳息記錄", key=f"btn_add_rep_{dlg_id}"):
+        st.session_state[f"cur_dlg_repayments_{dlg_id}"].append({
+            "type": "償還本金",
+            "date": date.today(),
+            "amount": 0
+        })
+        st.rerun()
+
     st.markdown("<br>", unsafe_allow_html=True)
     
     # 底部儲存與刪除操作
@@ -471,7 +469,6 @@ def project_form_dialog(edit_item=None):
             valid_targets = [t for t in updated_targets if t["target_code"] not in ["0", ""]]
             valid_repayments = [r for r in updated_repayments if r["amount"] > 0]
             
-            # 展延智慧判定
             has_paid_interest = any(r["type"] == "繳納利息" and r["amount"] > 0 for r in valid_repayments)
             final_rollover = p_rollover
             if has_paid_interest and final_rollover == 0:
@@ -537,7 +534,6 @@ for item in st.session_state.pledges:
     p_code_norm = normalize_tw_code(item["pledge_code"])
     orig_loan = item["loan_amount"]
     
-    # 從時間軸動態加總還款與繳息
     repayments_list = item.get("repayments", [])
     repaid_amt = sum(r["amount"] for r in repayments_list if r.get("type") == "償還本金")
     repaid_int = sum(r["amount"] for r in repayments_list if r.get("type") == "繳納利息")
@@ -564,7 +560,6 @@ for item in st.session_state.pledges:
     total_repaid_amount += repaid_amt
     total_repaid_interest += repaid_int
 
-    # 若已結清，取最後一筆還款日作為結算日
     if is_closed and repayments_list:
         latest_r_date = max([r["date"] if isinstance(r["date"], (date, datetime)) else parse_sheet_date(r["date"]) for r in repayments_list])
         end_calc_date = latest_r_date
@@ -573,7 +568,6 @@ for item in st.session_state.pledges:
 
     days_pledged = max((end_calc_date - item["pledge_date"]).days, 1)
     
-    # 總質借應計利息與未結未繳利息
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
     total_interest_paid += unpaid_interest
@@ -601,7 +595,6 @@ for item in st.session_state.pledges:
     target_unrealized_gain = proj_target_val - proj_target_cost
     net_arbitrage = (target_unrealized_gain + proj_dividends) - accrued_interest
 
-    # 狀態標籤判定
     days_to_refinance = max(540 - days_pledged, 0)
     if is_collateral_only:
         status_html = "<span class='badge-collateral'>🛡️ 擔保品</span>"
@@ -622,7 +615,6 @@ for item in st.session_state.pledges:
         status_html = "<span class='badge-active'>⚡ 進行中 (首期 1/3)</span>"
         time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
 
-    # 產生時間軸顯示 HTML
     timeline_items_html = []
     for r in repayments_list:
         r_dt_str = r['date'].strftime('%Y/%m/%d') if isinstance(r['date'], (date, datetime)) else str(r['date'])
@@ -738,32 +730,33 @@ with tab_proj:
 
             c_card, c_btn = st.columns([11, 1.2])
             with c_card:
-                card_html = f"""
-                <div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">
-                    <div>
-                        <div style="margin-bottom: 5px;">{r['status_html']}</div>
-                        <div style="font-size: 15px; font-weight: bold; color: #1e88e5; word-break: break-word;">{r['name']}</div>
-                        <div style="font-size: 11px; color: #888; margin-top: 2px;">{r['time_sub_html']}</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 13px;"><b>質押：</b>{r['pledge']}</div>
-                        <div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r['pledge_val']}</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 13px;">{loan_display_html}</div>
-                        <div style="font-size: 12px; margin-top: 3px;">{int_display_html}</div>
-                        {r['timeline_html']}
-                    </div>
-                    <div>
-                        <div style="font-size: 13px;"><b>轉投資：</b>{r['targets']}</div>
-                        <div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r['target_val']}</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 12px; color: #2e7d32;"><b>股息：</b>{r['dividends']}</div>
-                        <div style="font-size: 13px; margin-top: 3px;"><b>淨套利：</b><b style="color:{arb_color};">{arb_sign}${abs(arb_val):,.0f}</b></div>
-                    </div>
-                </div>
-                """
+                # 去除行首縮排，防止 Markdown 誤判為 Code Block 造成 HTML 標籤外洩
+                card_html = (
+                    f'<div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">'
+                    f'<div>'
+                    f'<div style="margin-bottom: 5px;">{r["status_html"]}</div>'
+                    f'<div style="font-size: 15px; font-weight: bold; color: #1e88e5; word-break: break-word;">{r["name"]}</div>'
+                    f'<div style="font-size: 11px; color: #888; margin-top: 2px;">{r["time_sub_html"]}</div>'
+                    f'</div>'
+                    f'<div>'
+                    f'<div style="font-size: 13px;"><b>質押：</b>{r["pledge"]}</div>'
+                    f'<div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r["pledge_val"]}</div>'
+                    f'</div>'
+                    f'<div>'
+                    f'<div style="font-size: 13px;">{loan_display_html}</div>'
+                    f'<div style="font-size: 12px; margin-top: 3px;">{int_display_html}</div>'
+                    f'{r["timeline_html"]}'
+                    f'</div>'
+                    f'<div>'
+                    f'<div style="font-size: 13px;"><b>轉投資：</b>{r["targets"]}</div>'
+                    f'<div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r["target_val"]}</div>'
+                    f'</div>'
+                    f'<div>'
+                    f'<div style="font-size: 12px; color: #2e7d32;"><b>股息：</b>{r["dividends"]}</div>'
+                    f'<div style="font-size: 13px; margin-top: 3px;"><b>淨套利：</b><b style="color:{arb_color};">{arb_sign}${abs(arb_val):,.0f}</b></div>'
+                    f'</div>'
+                    f'</div>'
+                )
                 st.markdown(card_html, unsafe_allow_html=True)
             with c_btn:
                 st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
