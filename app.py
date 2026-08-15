@@ -4,14 +4,14 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import json
 import requests
-import re
 
 # 頁面配置
 st.set_page_config(page_title="股票質押與實質套利筆記本", page_icon="📈", layout="wide")
 
-# 自定義樣式（橘白按鈕 + 卡片等寬網格對齊）
+# 自定義樣式（橘白新增按鈕 + 白底藍字儲存按鈕 + 卡片排版）
 st.markdown("""
 <style>
+/* 新增專案橘白按鈕 */
 div.stButton > button.orange-btn {
     background-color: #ff6b22 !important;
     color: #ffffff !important;
@@ -29,13 +29,40 @@ div.stButton > button.orange-btn:hover {
     box-shadow: 0 4px 10px rgba(255, 107, 34, 0.4) !important;
 }
 
-.project-card {
+/* 彈窗儲存按鈕：白底藍字風格 */
+div[data-testid="stFormSubmitButton"] > button {
+    background-color: #ffffff !important;
+    color: #1976d2 !important;
+    border: 1.5px solid #1976d2 !important;
+    font-weight: bold !important;
+    font-size: 15px !important;
+    border-radius: 8px !important;
+    box-shadow: 0 2px 4px rgba(25, 118, 210, 0.1) !important;
+    transition: all 0.2s ease !important;
+}
+div[data-testid="stFormSubmitButton"] > button:hover {
+    background-color: #f0f7ff !important;
+    color: #1565c0 !important;
+    border-color: #1565c0 !important;
+    box-shadow: 0 4px 8px rgba(25, 118, 210, 0.2) !important;
+}
+
+/* 卡片排版與垂直置中 */
+.project-row-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     background-color: #ffffff;
     border-radius: 8px;
     padding: 14px 18px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
     border: 1px solid #e0e0e0;
     box-shadow: 0 2px 5px rgba(0,0,0,0.03);
+    gap: 15px;
+}
+
+.project-card-grid {
+    flex-grow: 1;
     display: grid;
     grid-template-columns: 2fr 2fr 2fr 2.5fr 2fr;
     gap: 15px;
@@ -43,7 +70,11 @@ div.stButton > button.orange-btn:hover {
 }
 
 @media (max-width: 900px) {
-    .project-card {
+    .project-row-container {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .project-card-grid {
         grid-template-columns: 1fr;
         gap: 8px;
     }
@@ -81,7 +112,6 @@ def parse_sheet_date(date_val) -> date:
     d_str = str(date_val).strip()
     try:
         if "T" in d_str:
-            # 解析包含時區的 ISO 字串並轉換為台灣時區 (+8 小時)
             clean_str = d_str.replace("Z", "+00:00")
             dt = datetime.fromisoformat(clean_str)
             dt_tw = dt + timedelta(hours=8)
@@ -95,7 +125,7 @@ def parse_sheet_date(date_val) -> date:
             return date.today()
 
 def load_pledges_from_cloud():
-    """從 Google Sheets 讀取專案資料"""
+    """從 Google Sheets 讀取專案資料（支援全字元名稱）"""
     if "AKfycb" not in GSHEET_API_URL:
         return None
     try:
@@ -122,8 +152,9 @@ def load_pledges_from_cloud():
                     p_id = int(row.get("id", 1))
                     raw_name = str(row.get("project_name", "")).strip()
                     
-                    # 防呆：如果專案名稱被存成 ISO 日期字串，給予預設名稱
-                    if not raw_name or "T" in raw_name and "Z" in raw_name:
+                    if not raw_name:
+                        raw_name = f"專案 #{p_id}"
+                    elif "T" in raw_name and "Z" in raw_name and len(raw_name) > 20:
                         raw_name = f"質押專案 #{p_id}"
 
                     parsed_list.append({
@@ -143,7 +174,7 @@ def load_pledges_from_cloud():
     return None
 
 def save_pledges_to_cloud(pledges_list):
-    """將專案資料即時寫入 Google Sheets（強制純文字格式）"""
+    """將專案資料即時寫入 Google Sheets（支援文字、純數字、符號任意名稱）"""
     if "AKfycb" not in GSHEET_API_URL:
         return False, "尚未設定 Google Sheets API 網址"
     try:
@@ -152,13 +183,13 @@ def save_pledges_to_cloud(pledges_list):
             p_code_norm = normalize_tw_code(p['pledge_code'])
             flat_data.append({
                 "id": int(p["id"]),
-                "project_name": str(p["project_name"]).strip(),
+                "project_name": f"'{str(p['project_name']).strip()}", # 加單引號防試算表將純數字/符號轉換型別
                 "pledge_code": f"'{p_code_norm}",
                 "pledge_sheets": float(p["pledge_sheets"]),
                 "pledge_cost": float(p["pledge_cost"]),
                 "loan_amount": float(p["loan_amount"]),
                 "interest_rate": float(p["interest_rate"]),
-                "pledge_date": f"'{p['pledge_date'].strftime('%Y-%m-%d')}", # 加單引號防時區錯位
+                "pledge_date": f"'{p['pledge_date'].strftime('%Y-%m-%d')}",
                 "targets_json": json.dumps(p["targets"], ensure_ascii=False)
             })
         
@@ -250,13 +281,13 @@ def project_form_dialog(edit_item=None):
         st.session_state.cur_dlg_targets = curr_targets
 
     init_name = str(edit_item["project_name"]) if is_edit else ""
-    if "T" in init_name and "Z" in init_name:
+    if "T" in init_name and "Z" in init_name and len(init_name) > 20:
         init_name = f"專案 #{edit_item['id']}"
 
     st.markdown(f"#### {'✏️ 修改質押專案：' + init_name if is_edit else '➕ 建立全新質押專案'}")
     
     with st.form(key="pledge_modal_form"):
-        p_name = st.text_input("專案名稱", value=init_name if init_name else "新質押專案")
+        p_name = st.text_input("專案名稱 (支援中英文、純數字與任意符號)", value=init_name if init_name else "新質押專案")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -294,7 +325,7 @@ def project_form_dialog(edit_item=None):
                 "dividends_received": t_div
             })
 
-        submit_save = st.form_submit_button("💾 儲存並同步至 Google Sheets", type="primary", use_container_width=True)
+        submit_save = st.form_submit_button("💾 儲存並同步至 Google Sheets", use_container_width=True)
 
         if submit_save:
             new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
@@ -481,12 +512,13 @@ if project_display_data:
             arb_color = "#333"
             arb_sign = ""
 
-        c_card, c_btn = st.columns([11, 1])
+        # 使用外層 Flex 容器實現左右對齊 + 編輯按鈕垂直完美置中
+        c_card, c_btn = st.columns([11, 1.2])
         with c_card:
             card_html = f"""
-            <div class="project-card">
+            <div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">
                 <div>
-                    <div style="font-size: 15px; font-weight: bold; color: #1e88e5;">{r['name']}</div>
+                    <div style="font-size: 15px; font-weight: bold; color: #1e88e5; word-break: break-word;">{r['name']}</div>
                     <div style="font-size: 12px; color: #888; margin-top: 3px;">{r['days_rate']}</div>
                 </div>
                 <div>
@@ -509,7 +541,8 @@ if project_display_data:
             """
             st.markdown(card_html, unsafe_allow_html=True)
         with c_btn:
-            st.write("")
+            # 透過自定義置中包裝
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
             if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", use_container_width=True):
                 if "cur_dlg_targets" in st.session_state:
                     del st.session_state.cur_dlg_targets
