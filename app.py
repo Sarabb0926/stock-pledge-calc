@@ -57,6 +57,17 @@ div[data-testid="stFormSubmitButton"] > button:hover {
 }
 
 /* 狀態標籤樣式 */
+.badge-collateral {
+    background-color: #e3f2fd;
+    color: #1565c0;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: bold;
+    border: 1px solid #bbdefb;
+    display: inline-block;
+}
+
 .badge-active {
     background-color: #e8f5e9;
     color: #2e7d32;
@@ -337,7 +348,6 @@ def project_form_dialog(edit_item=None):
             p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"f_sheets_{dlg_id}")
             p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_id}")
             
-            # 展延次數選單（支援群益 2 次展延 ＝ 最長 1.5 年）
             curr_roll = int(edit_item.get("rollover_count", 0)) if is_edit else 0
             p_rollover = st.selectbox(
                 "質押展延狀態 (群益最長 1.5 年 / 展延 2 次)",
@@ -347,9 +357,9 @@ def project_form_dialog(edit_item=None):
                 key=f"f_roll_{dlg_id}"
             )
         with col2:
-            p_loan = st.number_input("原始借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
+            p_loan = st.number_input("原始借款金額 (元，存入擔保品未借請填 0)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
             p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"f_rate_{dlg_id}")
-            p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"f_date_{dlg_id}")
+            p_date = st.date_input("質押/存入開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"f_date_{dlg_id}")
         
         st.markdown("---")
         st.markdown("##### 💵 還款與繳息紀錄")
@@ -392,7 +402,6 @@ def project_form_dialog(edit_item=None):
             new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
             valid_targets = [t for t in updated_targets if t["target_code"] not in ["0", ""]]
             
-            # 若已繳利息且原本展延為0，智慧預設為展延1次
             final_rollover = p_rollover
             if p_repaid_int > 0 and final_rollover == 0:
                 final_rollover = 1
@@ -470,6 +479,9 @@ for item in st.session_state.pledges:
     rollover = int(item.get("rollover_count", 0))
     orig_loan = item["loan_amount"]
     remaining_loan = max(orig_loan - repaid_amt, 0.0)
+    
+    # 判斷是否為純擔保品或已結清
+    is_collateral_only = (orig_loan == 0 and p_code_norm != "0" and item.get("pledge_sheets", 0) > 0)
     is_closed = (remaining_loan == 0 and orig_loan > 0)
     
     if p_code_norm == "0" or item.get("pledge_sheets", 0) == 0:
@@ -492,7 +504,6 @@ for item in st.session_state.pledges:
     end_calc_date = item["repaid_date"] if (is_closed and item.get("repaid_date")) else date.today()
     days_pledged = max((end_calc_date - item["pledge_date"]).days, 1)
     
-    # 總質借利息與未繳未結利息計算
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
     total_interest_paid += unpaid_interest
@@ -522,7 +533,10 @@ for item in st.session_state.pledges:
 
     # 🎯 狀態標籤判定（最前置）
     days_to_refinance = max(540 - days_pledged, 0)
-    if is_closed:
+    if is_collateral_only:
+        status_html = "<span class='badge-collateral'>🛡️ 擔保品</span>"
+        time_sub_html = "純擔保品 (未借款)"
+    elif is_closed:
         status_html = "<span class='badge-closed'>🟢 已結清 (已換約)</span>"
         time_sub_html = f"{days_pledged}天 / {item['interest_rate']}%"
     elif days_pledged >= 500 or (rollover >= 2 and days_pledged >= 480):
@@ -544,6 +558,7 @@ for item in st.session_state.pledges:
         "name": str(item["project_name"]),
         "status_html": status_html,
         "time_sub_html": time_sub_html,
+        "is_collateral_only": is_collateral_only,
         "is_closed": is_closed,
         "rollover": rollover,
         "pledge": pledge_display_str,
@@ -627,12 +642,16 @@ with tab_proj:
                 arb_color = "#333"
                 arb_sign = ""
 
-            if r["repaid_amt"] > 0:
+            if r["is_collateral_only"]:
+                loan_display_html = "<b>借款金額：</b>$0 (未借款)"
+            elif r["repaid_amt"] > 0:
                 loan_display_html = f"<b>未還借款：</b>${r['remaining_loan']:,.0f}<br><span style='font-size:11px; color:#2e7d32;'>已還本金 ${r['repaid_amt']:,.0f}</span>"
             else:
                 loan_display_html = f"<b>借款金額：</b>${r['orig_loan']:,.0f}"
 
-            if r["repaid_int"] > 0:
+            if r["is_collateral_only"]:
+                int_display_html = "<b>利息：</b>$0"
+            elif r["repaid_int"] > 0:
                 int_display_html = f"<b>未結利息：</b><span style='color:#d9534f;'>${r['unpaid_interest']:,.0f}</span><br><span style='font-size:11px; color:#1e88e5;'>已繳息 ${r['repaid_int']:,.0f}</span>"
             else:
                 int_display_html = f"<b>利息：</b><span style='color:#d9534f;'>{r['interest']}</span>"
