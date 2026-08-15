@@ -14,7 +14,7 @@ st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置�
 # ==============================================================================
 # 🔗 請將下方引號內的網址換成你的 Google Apps Script 網址
 # ==============================================================================
-GSHEET_API_URL = "https://docs.google.com/spreadsheets/d/182icEna6cEJKWsivpXe0lbajOpcfdoQr7SkNOdJsit8/edit?usp=sharing"
+GSHEET_API_URL = "https://script.google.com/macros/s/AKfycby-8R2n7t_l7oX26KjQa1go6PlgzdAZ975prldxzsav4QVHhvdaoDWr5dn5sWBrEDW1ww/exec"
 # ==============================================================================
 
 def load_pledges_from_cloud():
