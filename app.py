@@ -17,6 +17,18 @@ st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置�
 GSHEET_API_URL = "https://script.google.com/macros/s/AKfycby-8R2n7t_l7oX26KjQa1go6PlgzdAZ975prldxzsav4QVHhvdaoDWr5dn5sWBrEDW1ww/exec"
 # ==============================================================================
 
+def normalize_tw_code(code_str: str) -> str:
+    """自動修復被 Google Sheets 吞掉開頭 00 的台股/ETF 代號"""
+    c = str(code_str).strip().upper()
+    if not c:
+        return ""
+    if c.isdigit():
+        if len(c) <= 2:
+            return c.zfill(4)   # 50 -> 0050, 56 -> 0056
+        elif len(c) == 3:
+            return c.zfill(5)   # 878 -> 00878, 919 -> 00919, 929 -> 00929
+    return c
+
 def load_pledges_from_cloud():
     """從 Google Sheets 讀取專案資料"""
     if "AKfycb" not in GSHEET_API_URL:
@@ -30,16 +42,26 @@ def load_pledges_from_cloud():
                 for row in data:
                     t_json = row.get("targets_json", "[]")
                     targets = json.loads(t_json) if isinstance(t_json, str) else t_json
+                    
+                    fixed_targets = []
+                    for t in targets:
+                        fixed_targets.append({
+                            "target_code": normalize_tw_code(t.get("target_code", "")),
+                            "target_sheets": float(t.get("target_sheets", 1.0)),
+                            "target_cost": float(t.get("target_cost", 0)),
+                            "dividends_received": float(t.get("dividends_received", 0))
+                        })
+
                     parsed_list.append({
                         "id": int(row.get("id", 1)),
                         "project_name": str(row.get("project_name", "質押專案")),
-                        "pledge_code": str(row.get("pledge_code", "")),
+                        "pledge_code": normalize_tw_code(row.get("pledge_code", "")),
                         "pledge_sheets": float(row.get("pledge_sheets", 1.0)),
                         "pledge_cost": float(row.get("pledge_cost", 0)),
                         "loan_amount": float(row.get("loan_amount", 0)),
                         "interest_rate": float(row.get("interest_rate", 2.3)),
                         "pledge_date": datetime.strptime(str(row.get("pledge_date", "2025-01-01")).split("T")[0], "%Y-%m-%d").date(),
-                        "targets": targets
+                        "targets": fixed_targets
                     })
                 return parsed_list
     except Exception:
@@ -56,7 +78,7 @@ def save_pledges_to_cloud(pledges_list):
             flat_data.append({
                 "id": p["id"],
                 "project_name": p["project_name"],
-                "pledge_code": p["pledge_code"],
+                "pledge_code": f"'{normalize_tw_code(p['pledge_code'])}",  # 加單引號強制 Google Sheets 視為純文字保留 00
                 "pledge_sheets": p["pledge_sheets"],
                 "pledge_cost": p["pledge_cost"],
                 "loan_amount": p["loan_amount"],
@@ -72,55 +94,57 @@ def save_pledges_to_cloud(pledges_list):
     except Exception as e:
         return False, str(e)
 
-# --- 雙重備援股價抓取工具（Yahoo + 證交所 API）---
-@st.cache_data(ttl=300)
+# --- 🚀 超穩即時股價 API (Yahoo 原生 JSON + TWSE/TPEX 備援) ---
+@st.cache_data(ttl=180)
 def get_stock_price(symbol: str) -> float:
-    symbol = str(symbol).strip().upper()
-    if not symbol:
+    raw_code = normalize_tw_code(symbol)
+    if not raw_code:
         return 0.0
 
-    # 1. 嘗試 Yahoo Finance 查詢 (抓取 1 個月確保週末連假有最新價)
-    symbols_to_try = []
-    if symbol.endswith(".TW") or symbol.endswith(".TWO"):
-        symbols_to_try = [symbol]
-    elif symbol.isdigit() or any(c.isdigit() for c in symbol):
-        symbols_to_try = [f"{symbol}.TW", f"{symbol}.TWO"]
-    else:
-        symbols_to_try = [symbol, f"{symbol}.TW", f"{symbol}.TWO"]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
-    for sym in symbols_to_try:
+    candidates = []
+    if "." in raw_code:
+        candidates = [raw_code]
+    elif raw_code.isdigit() or any(c.isdigit() for c in raw_code):
+        candidates = [f"{raw_code}.TW", f"{raw_code}.TWO"]
+    else:
+        candidates = [raw_code, f"{raw_code}.TW", f"{raw_code}.TWO"]
+
+    # 1. 管道一：Yahoo Chart API 直接穿透
+    for sym in candidates:
         try:
-            ticker = yf.Ticker(sym)
-            hist = ticker.history(period="1mo")
-            if not hist.empty and "Close" in hist.columns:
-                valid_closes = hist["Close"].dropna()
-                if not valid_closes.empty:
-                    p = float(valid_closes.iloc[-1])
-                    if p > 0:
-                        return round(p, 2)
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=5d&interval=1d"
+            r = requests.get(url, headers=headers, timeout=4)
+            if r.status_code == 200:
+                res_data = r.json()
+                result = res_data.get("chart", {}).get("result", [])
+                if result:
+                    meta = result[0].get("meta", {})
+                    price = meta.get("regularMarketPrice")
+                    if price and float(price) > 0:
+                        return round(float(price), 2)
+                    
+                    closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                    valid_closes = [c for c in closes if c is not None and c > 0]
+                    if valid_closes:
+                        return round(float(valid_closes[-1]), 2)
         except Exception:
             pass
 
-    # 2. 備援：台灣證交所 / 櫃買即時 API
-    pure_code = symbol.replace(".TW", "").replace(".TWO", "").strip()
-    if pure_code.isdigit():
-        for prefix in ["tse", "otc"]:
-            try:
-                url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={prefix}_{pure_code}.tw"
-                r = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
-                if r.status_code == 200:
-                    msg_arr = r.json().get("msgArray", [])
-                    if msg_arr:
-                        item = msg_arr[0]
-                        # 優先取最新成交價 z，若休市取昨收價 y
-                        price_str = item.get("z", "-")
-                        if price_str == "-" or float(price_str) == 0:
-                            price_str = item.get("y", "0")
-                        val = float(price_str)
-                        if val > 0:
-                            return round(val, 2)
-            except Exception:
-                continue
+    # 2. 管道二：yfinance 套件備援
+    for sym in candidates:
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="5d")
+            if not hist.empty and "Close" in hist.columns:
+                valid = hist["Close"].dropna()
+                if not valid.empty and float(valid.iloc[-1]) > 0:
+                    return round(float(valid.iloc[-1]), 2)
+        except Exception:
+            pass
 
     return 0.0
 
@@ -171,7 +195,7 @@ def project_form_dialog(edit_item=None):
             t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"dlg_t_div_{dlg_id}_{idx}")
         
         updated_targets.append({
-            "target_code": t_code,
+            "target_code": normalize_tw_code(t_code),
             "target_sheets": t_sheets,
             "target_cost": t_cost,
             "dividends_received": t_div
@@ -198,7 +222,7 @@ def project_form_dialog(edit_item=None):
         new_project = {
             "id": new_id,
             "project_name": p_name,
-            "pledge_code": p_code,
+            "pledge_code": normalize_tw_code(p_code),
             "pledge_sheets": p_sheets,
             "pledge_cost": p_cost,
             "loan_amount": p_loan,
@@ -230,7 +254,8 @@ total_dividends = 0.0
 table_rows = []
 
 for item in st.session_state.pledges:
-    p_price = get_stock_price(item["pledge_code"])
+    p_code_norm = normalize_tw_code(item["pledge_code"])
+    p_price = get_stock_price(p_code_norm)
     current_collateral_val = p_price * item["pledge_sheets"] * 1000
     total_collateral_value += current_collateral_val
     total_loan_amount += item["loan_amount"]
@@ -246,14 +271,15 @@ for item in st.session_state.pledges:
     target_summary_list = []
 
     for t in item["targets"]:
-        if not t.get("target_code"):
+        t_code_norm = normalize_tw_code(t.get("target_code", ""))
+        if not t_code_norm:
             continue
-        t_price = get_stock_price(t["target_code"])
+        t_price = get_stock_price(t_code_norm)
         c_val = t_price * t.get("target_sheets", 1.0) * 1000
         proj_target_val += c_val
         proj_target_cost += t.get("target_cost", 0)
         proj_dividends += t.get("dividends_received", 0)
-        target_summary_list.append(f"{t['target_code']} ({t['target_sheets']}張 @{t_price})")
+        target_summary_list.append(f"{t_code_norm} ({t.get('target_sheets', 1.0)}張 @${t_price})")
 
     total_target_value += proj_target_val
     total_target_cost += proj_target_cost
@@ -265,9 +291,9 @@ for item in st.session_state.pledges:
     table_rows.append({
         "id": item["id"],
         "name": item["project_name"],
-        "pledge": f"{item['pledge_code']} ({item['pledge_sheets']}張)",
+        "pledge": f"{p_code_norm} ({item['pledge_sheets']}張)",
         "cost": f"${item['pledge_cost']:,.0f}",
-        "pledge_val": f"${current_collateral_val:,.0f} (@{p_price})",
+        "pledge_val": f"${current_collateral_val:,.0f} (@${p_price})",
         "loan": f"${item['loan_amount']:,.0f}",
         "days_rate": f"{days_pledged}天 / {item['interest_rate']}%",
         "interest": f"${accrued_interest:,.0f}",
