@@ -14,7 +14,7 @@ st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置�
 # ==============================================================================
 # 🔗 請將下方引號內的網址換成你的 Google Apps Script 網址
 # ==============================================================================
-GSHEET_API_URL = "https://script.google.com/macros/s/AKfycby-8R2n7t_l7oX26KjQa1go6PlgzdAZ975prldxzsav4QVHhvdaoDWr5dn5sWBrEDW1ww/exec"
+GSHEET_API_URL = "https://docs.google.com/spreadsheets/d/182icEna6cEJKWsivpXe0lbajOpcfdoQr7SkNOdJsit8/edit?usp=sharing"
 # ==============================================================================
 
 def load_pledges_from_cloud():
@@ -42,7 +42,7 @@ def load_pledges_from_cloud():
                         "targets": targets
                     })
                 return parsed_list
-    except Exception as e:
+    except Exception:
         pass
     return None
 
@@ -104,134 +104,92 @@ if "pledges" not in st.session_state:
     if cloud_data:
         st.session_state.pledges = cloud_data
     else:
-        st.session_state.pledges = [
-            {
-                "id": 1,
-                "project_name": "2025質押套利計畫",
-                "pledge_code": "00878",
-                "pledge_sheets": 10.0,
-                "pledge_cost": 111181,
-                "loan_amount": 100000,
-                "interest_rate": 2.28,
-                "pledge_date": date(2025, 9, 5),
-                "targets": [
-                    {
-                        "target_code": "00919",
-                        "target_sheets": 1.0,
-                        "target_cost": 30410,
-                        "dividends_received": 2340
-                    }
-                ]
-            }
-        ]
+        st.session_state.pledges = []
 
-if "editing_id" not in st.session_state:
-    st.session_state.editing_id = None
+if "dialog_targets" not in st.session_state:
+    st.session_state.dialog_targets = []
 
-if "form_targets" not in st.session_state:
-    st.session_state.form_targets = []
-
-# --- 表單處理邏輯 ---
-def open_edit_form(edit_data=None):
-    if edit_data:
-        st.session_state.editing_id = edit_data["id"]
-        st.session_state.form_targets = [dict(t) for t in edit_data["targets"]]
-    else:
-        st.session_state.editing_id = "NEW"
-        st.session_state.form_targets = [{
-            "target_code": "00919",
-            "target_sheets": 1.0,
-            "target_cost": 30000,
-            "dividends_received": 0
-        }]
-
-is_editing = st.session_state.editing_id is not None
-edit_item = None
-if is_editing and st.session_state.editing_id != "NEW":
-    edit_item = next((p for p in st.session_state.pledges if p["id"] == st.session_state.editing_id), None)
-
-form_title = "✏️ 編輯專案" if (is_editing and st.session_state.editing_id != "NEW") else "➕ 新增質押專案"
-
-with st.expander(form_title, expanded=is_editing):
-    with st.form(key="pledge_main_form"):
-        p_name = st.text_input("專案名稱", value=edit_item["project_name"] if edit_item else "新質押專案")
-        col1, col2 = st.columns(2)
-        with col1:
-            p_code = st.text_input("質押標的代號", value=edit_item["pledge_code"] if edit_item else "0050")
-            p_sheets = st.number_input("質押張數", min_value=0.01, value=float(edit_item["pledge_sheets"]) if edit_item else 5.0, step=0.5)
-            p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if edit_item else 100000)
-        with col2:
-            p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if edit_item else 500000)
-            p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if edit_item else 3.8, step=0.01)
-            p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if edit_item else date.today())
+# --- 彈窗表單對話盒 (解決問題 1 & 2) ---
+@st.dialog("📋 質押專案編輯器", width="large")
+def project_form_dialog(edit_item=None):
+    is_edit = edit_item is not None
+    st.markdown(f"#### {'✏️ 修改質押專案' if is_edit else '➕ 建立全新質押專案'}")
+    
+    p_name = st.text_input("專案名稱", value=edit_item["project_name"] if is_edit else "新質押專案")
+    col1, col2 = st.columns(2)
+    with col1:
+        p_code = st.text_input("質押標的代號 (如: 00878, 0050)", value=edit_item["pledge_code"] if is_edit else "")
+        p_sheets = st.number_input("質押張數", min_value=0.01, value=float(edit_item["pledge_sheets"]) if is_edit else 1.0, step=0.5)
+        p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0)
+    with col2:
+        p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0)
+        p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01)
+        p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today())
+    
+    st.markdown("---")
+    st.markdown("##### 🎯 轉投資標的設定 (可新增多筆)")
+    
+    updated_targets = []
+    for idx, t in enumerate(st.session_state.dialog_targets):
+        st.markdown(f"**轉投資標的 #{idx+1}**")
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1:
+            t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"dlg_t_code_{idx}")
+        with tc2:
+            t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"dlg_t_sheets_{idx}")
+        with tc3:
+            t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"dlg_t_cost_{idx}")
+        with tc4:
+            t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"dlg_t_div_{idx}")
         
-        st.markdown("---")
-        st.subheader("🎯 轉投資標的設定")
-        
-        updated_targets = []
-        for idx, t in enumerate(st.session_state.form_targets):
-            st.markdown(f"**轉投資標的 #{idx+1}**")
-            tc1, tc2, tc3, tc4 = st.columns(4)
-            with tc1:
-                t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"t_code_{idx}")
-            with tc2:
-                t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"t_sheets_{idx}")
-            with tc3:
-                t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"t_cost_{idx}")
-            with tc4:
-                t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"t_div_{idx}")
-            
-            updated_targets.append({
-                "target_code": t_code,
-                "target_sheets": t_sheets,
-                "target_cost": t_cost,
-                "dividends_received": t_div
-            })
+        updated_targets.append({
+            "target_code": t_code,
+            "target_sheets": t_sheets,
+            "target_cost": t_cost,
+            "dividends_received": t_div
+        })
 
-        submit_btn = st.form_submit_button("💾 儲存並即時同步 Google Sheets")
-
-        if submit_btn:
-            new_id = edit_item["id"] if edit_item else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
-            new_project = {
-                "id": new_id,
-                "project_name": p_name,
-                "pledge_code": p_code,
-                "pledge_sheets": p_sheets,
-                "pledge_cost": p_cost,
-                "loan_amount": p_loan,
-                "interest_rate": p_rate,
-                "pledge_date": p_date,
-                "targets": updated_targets
-            }
-            
-            if edit_item:
-                for i, p in enumerate(st.session_state.pledges):
-                    if p["id"] == edit_item["id"]:
-                        st.session_state.pledges[i] = new_project
-                        break
-            else:
-                st.session_state.pledges.append(new_project)
-            
-            success, msg = save_pledges_to_cloud(st.session_state.pledges)
-            st.session_state.editing_id = None
-            if success:
-                st.success("✅ 專案已儲存，並已成功同步至 Google Sheets！")
-            else:
-                st.warning(f"⚠️ 本地已儲存，但雲端同步失敗：{msg}")
-            st.rerun()
-
-    b_col1, b_col2 = st.columns([1, 4])
-    with b_col1:
-        if st.button("➕ 新增轉投資標的"):
-            st.session_state.form_targets.append({
+    btn_t1, btn_t2 = st.columns(2)
+    with btn_t1:
+        if st.button("➕ 新增一筆轉投資標的", use_container_width=True):
+            st.session_state.dialog_targets.append({
                 "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
             })
             st.rerun()
-    with b_col2:
-        if len(st.session_state.form_targets) > 1:
-            if st.button("🗑️ 刪除最後一個標的"):
-                st.session_state.form_targets.pop()
+    with btn_t2:
+        if len(st.session_state.dialog_targets) > 1:
+            if st.button("🗑️ 刪除最後一筆轉投資", use_container_width=True):
+                st.session_state.dialog_targets.pop()
                 st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("💾 儲存並同步至 Google Sheets", type="primary", use_container_width=True):
+        new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
+        valid_targets = [t for t in updated_targets if t["target_code"].strip() != ""]
+        
+        new_project = {
+            "id": new_id,
+            "project_name": p_name,
+            "pledge_code": p_code,
+            "pledge_sheets": p_sheets,
+            "pledge_cost": p_cost,
+            "loan_amount": p_loan,
+            "interest_rate": p_rate,
+            "pledge_date": p_date,
+            "targets": valid_targets
+        }
+        
+        if is_edit:
+            for i, p in enumerate(st.session_state.pledges):
+                if p["id"] == edit_item["id"]:
+                    st.session_state.pledges[i] = new_project
+                    break
+        else:
+            st.session_state.pledges.append(new_project)
+        
+        save_pledges_to_cloud(st.session_state.pledges)
+        st.success("✅ 專案已儲存並同步至雲端！")
+        st.rerun()
 
 # --- 資料計算與彙整 ---
 total_collateral_value = 0.0
@@ -294,11 +252,12 @@ for item in st.session_state.pledges:
 overall_maintenance_ratio = (total_collateral_value / total_loan_amount * 100) if total_loan_amount > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板 ---
+# --- 頂部儀表板 (問題 3: 顯示 5 欄完整資產與利息看板) ---
 st.divider()
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
 m2.metric("💳 總借款金額", f"${total_loan_amount:,.0f}")
+m3.metric("💸 累計總質借利息", f"${total_interest_paid:,.0f}", delta=f"總配息 ${total_dividends:,.0f}")
 
 if overall_maintenance_ratio < 130:
     ratio_delta = "🚨 低於130% 追繳警告！"
@@ -307,13 +266,25 @@ elif overall_maintenance_ratio < 160:
 else:
     ratio_delta = "✅ 安全範圍"
 
-m3.metric("⚡ 整戶總維持率", f"{overall_maintenance_ratio:.2f}%", delta=ratio_delta)
-m4.metric("💰 總實質套利金額", f"${total_net_arbitrage:,.0f}", delta=f"總配息 ${total_dividends:,.0f}")
+m4.metric("⚡ 整戶總維持率", f"{overall_maintenance_ratio:.2f}%", delta=ratio_delta)
+m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
 
 st.divider()
 
-# --- 彙整總表 ---
-st.subheader("📋 質押專案彙整總表")
+# --- 彙整總表與操作按鈕 ---
+header_col1, header_col2 = st.columns([4, 1])
+with header_col1:
+    st.subheader("📋 質押專案彙整總表")
+with header_col2:
+    if st.button("➕ 新增質押專案", type="primary", use_container_width=True):
+        # 徹底清空暫存，預設一筆空白轉投資標的
+        st.session_state.dialog_targets = [{
+            "target_code": "",
+            "target_sheets": 1.0,
+            "target_cost": 0,
+            "dividends_received": 0
+        }]
+        project_form_dialog(None)
 
 if table_rows:
     table_body = ""
@@ -368,11 +339,11 @@ if table_rows:
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("⚙️ 專案管理操作")
-    col_sel, col_act1, col_act2, col_act3 = st.columns([3, 1, 1, 1])
+    col_sel, col_act1, col_act2 = st.columns([3, 1, 1])
     
     with col_sel:
         selected_proj_id = st.selectbox(
-            "選擇專案：", 
+            "選擇要操作的專案：", 
             options=[p["id"] for p in st.session_state.pledges],
             format_func=lambda x: next((p["project_name"] for p in st.session_state.pledges if p["id"] == x), "")
         )
@@ -380,30 +351,23 @@ if table_rows:
     with col_act1:
         st.write("")
         st.write("")
-        if st.button("✏️ 編輯專案", use_container_width=True):
+        if st.button("✏️ 編輯選取專案", use_container_width=True):
             target_p = next((p for p in st.session_state.pledges if p["id"] == selected_proj_id), None)
             if target_p:
-                open_edit_form(target_p)
-                st.rerun()
+                st.session_state.dialog_targets = [dict(t) for t in target_p.get("targets", [])]
+                if not st.session_state.dialog_targets:
+                    st.session_state.dialog_targets = [{
+                        "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
+                    }]
+                project_form_dialog(target_p)
 
     with col_act2:
         st.write("")
         st.write("")
-        if st.button("➕ 新建專案", use_container_width=True):
-            open_edit_form(None)
-            st.rerun()
-
-    with col_act3:
-        st.write("")
-        st.write("")
-        if st.button("🗑️ 刪除專案", use_container_width=True):
+        if st.button("🗑️ 刪除選取專案", use_container_width=True):
             st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != selected_proj_id]
             save_pledges_to_cloud(st.session_state.pledges)
-            st.session_state.editing_id = None
             st.success("已成功刪除專案並同步 Google Sheets！")
             st.rerun()
 else:
-    st.info("目前尚無專案，請點選上方展開區建立你的第一筆套利專案！")
-    if st.button("➕ 開始新增專案"):
-        open_edit_form(None)
-        st.rerun()
+    st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
