@@ -31,14 +31,14 @@ def load_pledges_from_cloud():
                     t_json = row.get("targets_json", "[]")
                     targets = json.loads(t_json) if isinstance(t_json, str) else t_json
                     parsed_list.append({
-                        "id": int(row["id"]),
-                        "project_name": str(row["project_name"]),
-                        "pledge_code": str(row["pledge_code"]),
-                        "pledge_sheets": float(row["pledge_sheets"]),
-                        "pledge_cost": float(row["pledge_cost"]),
-                        "loan_amount": float(row["loan_amount"]),
-                        "interest_rate": float(row["interest_rate"]),
-                        "pledge_date": datetime.strptime(str(row["pledge_date"]).split("T")[0], "%Y-%m-%d").date(),
+                        "id": int(row.get("id", 1)),
+                        "project_name": str(row.get("project_name", "質押專案")),
+                        "pledge_code": str(row.get("pledge_code", "")),
+                        "pledge_sheets": float(row.get("pledge_sheets", 1.0)),
+                        "pledge_cost": float(row.get("pledge_cost", 0)),
+                        "loan_amount": float(row.get("loan_amount", 0)),
+                        "interest_rate": float(row.get("interest_rate", 2.3)),
+                        "pledge_date": datetime.strptime(str(row.get("pledge_date", "2025-01-01")).split("T")[0], "%Y-%m-%d").date(),
                         "targets": targets
                     })
                 return parsed_list
@@ -72,14 +72,14 @@ def save_pledges_to_cloud(pledges_list):
     except Exception as e:
         return False, str(e)
 
-# --- 強化版股價抓取工具函數 ---
+# --- 雙重備援股價抓取工具（Yahoo + 證交所 API）---
 @st.cache_data(ttl=300)
 def get_stock_price(symbol: str) -> float:
     symbol = str(symbol).strip().upper()
     if not symbol:
         return 0.0
-    
-    # 建立嘗試的代號清單（支援純數字台股上市 .TW、上櫃 .TWO 或美股代號）
+
+    # 1. 嘗試 Yahoo Finance 查詢 (抓取 1 個月確保週末連假有最新價)
     symbols_to_try = []
     if symbol.endswith(".TW") or symbol.endswith(".TWO"):
         symbols_to_try = [symbol]
@@ -91,14 +91,37 @@ def get_stock_price(symbol: str) -> float:
     for sym in symbols_to_try:
         try:
             ticker = yf.Ticker(sym)
-            # 抓取最近 5 天資料，避開週末與休市無數據問題
-            hist = ticker.history(period="5d")
+            hist = ticker.history(period="1mo")
             if not hist.empty and "Close" in hist.columns:
                 valid_closes = hist["Close"].dropna()
                 if not valid_closes.empty:
-                    return round(float(valid_closes.iloc[-1]), 2)
+                    p = float(valid_closes.iloc[-1])
+                    if p > 0:
+                        return round(p, 2)
         except Exception:
-            continue
+            pass
+
+    # 2. 備援：台灣證交所 / 櫃買即時 API
+    pure_code = symbol.replace(".TW", "").replace(".TWO", "").strip()
+    if pure_code.isdigit():
+        for prefix in ["tse", "otc"]:
+            try:
+                url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={prefix}_{pure_code}.tw"
+                r = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code == 200:
+                    msg_arr = r.json().get("msgArray", [])
+                    if msg_arr:
+                        item = msg_arr[0]
+                        # 優先取最新成交價 z，若休市取昨收價 y
+                        price_str = item.get("z", "-")
+                        if price_str == "-" or float(price_str) == 0:
+                            price_str = item.get("y", "0")
+                        val = float(price_str)
+                        if val > 0:
+                            return round(val, 2)
+            except Exception:
+                continue
+
     return 0.0
 
 # --- 初始化 Session State 資料庫 ---
@@ -116,18 +139,20 @@ if "dialog_targets" not in st.session_state:
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
-    st.markdown(f"#### {'✏️ 修改質押專案' if is_edit else '➕ 建立全新質押專案'}")
+    dlg_id = str(edit_item["id"]) if is_edit else "new"
     
-    p_name = st.text_input("專案名稱", value=edit_item["project_name"] if is_edit else "新質押專案")
+    st.markdown(f"#### {'✏️ 修改質押專案：' + edit_item['project_name'] if is_edit else '➕ 建立全新質押專案'}")
+    
+    p_name = st.text_input("專案名稱", value=edit_item["project_name"] if is_edit else "新質押專案", key=f"f_name_{dlg_id}")
     col1, col2 = st.columns(2)
     with col1:
-        p_code = st.text_input("質押標的代號 (如: 00878, 0050)", value=edit_item["pledge_code"] if is_edit else "")
-        p_sheets = st.number_input("質押張數", min_value=0.01, value=float(edit_item["pledge_sheets"]) if is_edit else 1.0, step=0.5)
-        p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0)
+        p_code = st.text_input("質押標的代號 (如: 00878, 0050)", value=edit_item["pledge_code"] if is_edit else "", key=f"f_code_{dlg_id}")
+        p_sheets = st.number_input("質押張數", min_value=0.01, value=float(edit_item["pledge_sheets"]) if is_edit else 1.0, step=0.5, key=f"f_sheets_{dlg_id}")
+        p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_id}")
     with col2:
-        p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0)
-        p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01)
-        p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today())
+        p_loan = st.number_input("借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
+        p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"f_rate_{dlg_id}")
+        p_date = st.date_input("質押開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"f_date_{dlg_id}")
     
     st.markdown("---")
     st.markdown("##### 🎯 轉投資標的設定 (可新增多筆)")
@@ -137,13 +162,13 @@ def project_form_dialog(edit_item=None):
         st.markdown(f"**轉投資標的 #{idx+1}**")
         tc1, tc2, tc3, tc4 = st.columns(4)
         with tc1:
-            t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"dlg_t_code_{idx}")
+            t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"dlg_t_code_{dlg_id}_{idx}")
         with tc2:
-            t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"dlg_t_sheets_{idx}")
+            t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"dlg_t_sheets_{dlg_id}_{idx}")
         with tc3:
-            t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"dlg_t_cost_{idx}")
+            t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"dlg_t_cost_{dlg_id}_{idx}")
         with tc4:
-            t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"dlg_t_div_{idx}")
+            t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"dlg_t_div_{dlg_id}_{idx}")
         
         updated_targets.append({
             "target_code": t_code,
@@ -221,13 +246,13 @@ for item in st.session_state.pledges:
     target_summary_list = []
 
     for t in item["targets"]:
-        if not t["target_code"]:
+        if not t.get("target_code"):
             continue
         t_price = get_stock_price(t["target_code"])
-        c_val = t_price * t["target_sheets"] * 1000
+        c_val = t_price * t.get("target_sheets", 1.0) * 1000
         proj_target_val += c_val
-        proj_target_cost += t["target_cost"]
-        proj_dividends += t["dividends_received"]
+        proj_target_cost += t.get("target_cost", 0)
+        proj_dividends += t.get("dividends_received", 0)
         target_summary_list.append(f"{t['target_code']} ({t['target_sheets']}張 @{t_price})")
 
     total_target_value += proj_target_val
