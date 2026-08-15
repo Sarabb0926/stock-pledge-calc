@@ -37,7 +37,7 @@ div[data-testid="stFormSubmitButton"] > button {
     font-weight: bold !important;
     font-size: 15px !important;
     border-radius: 8px !important;
-    box-shadow: 0 2px 4px rgba(255, 108, 210, 0.1) !important;
+    box-shadow: 0 2px 4px rgba(25, 118, 210, 0.1) !important;
     transition: all 0.2s ease !important;
 }
 div[data-testid="stFormSubmitButton"] > button:hover {
@@ -65,7 +65,7 @@ div[data-testid="stFormSubmitButton"] > button:hover {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 股票質押與實質套利筆記本 (Google Sheets 雲端連線版)")
+st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
 st.caption("自動連動實時股價 · Google 雲端自動存檔 · 跨裝置即時同步 · 整戶維持率監控")
 
 # ==============================================================================
@@ -442,12 +442,11 @@ total_liability = total_loan_amount + total_interest_paid
 overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板 ---
+# --- 頂部儀表板（維持率緊接在總借款金額後面） ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
 m2.metric("💳 總借款金額", f"${total_loan_amount:,.0f}")
-m3.metric("💸 累計總質借利息", f"${total_interest_paid:,.0f}", delta=f"總配息 ${total_dividends:,.0f}")
 
 is_danger = overall_maintenance_ratio < custom_danger_ratio
 is_warn = overall_maintenance_ratio < custom_warn_ratio
@@ -459,7 +458,7 @@ elif is_warn:
 else:
     ratio_delta_text = f"✅ 安全範圍 (>{custom_warn_ratio}%)"
 
-with m4:
+with m3:
     if is_danger or is_warn:
         st.markdown(f"""
         <div style="padding: 2px 0;">
@@ -471,57 +470,10 @@ with m4:
     else:
         st.metric("⚡ 整戶總維持率", f"{overall_maintenance_ratio:.2f}%", delta=ratio_delta_text)
 
+m4.metric("💸 累計總質借利息", f"${total_interest_paid:,.0f}", delta=f"總配息 ${total_dividends:,.0f}")
 m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
 
 st.divider()
-
-# --- 📈 整體時間軸累積成長曲線圖 ---
-if len(st.session_state.pledges) > 0:
-    with st.expander("📈 查看整體時間軸累積成長趨勢圖", expanded=True):
-        # 找出最早質押日期
-        earliest_date = min([p["pledge_date"] for p in st.session_state.pledges])
-        today_date = date.today()
-        
-        # 產生以週/月為步進的時間序列節點
-        date_range = pd.date_range(start=earliest_date, end=today_date, freq="15D")
-        if len(date_range) == 0 or date_range[-1].date() < today_date:
-            date_range = date_range.append(pd.DatetimeIndex([pd.to_datetime(today_date)]))
-        
-        timeline_records = []
-        for cur_dt in date_range:
-            d = cur_dt.date()
-            t_loan = 0.0
-            t_target_val = 0.0
-            t_target_cost = 0.0
-            t_div = 0.0
-            t_interest = 0.0
-
-            for p in st.session_state.pledges:
-                if p["pledge_date"] <= d:
-                    t_loan += p["loan_amount"]
-                    days = max((d - p["pledge_date"]).days, 1)
-                    t_interest += p["loan_amount"] * (p["interest_rate"] / 100.0) * (days / 365.0)
-
-                    for t in p.get("targets", []):
-                        if t.get("target_code") and t.get("target_code") != "0":
-                            p_price = get_stock_price(t["target_code"])
-                            t_target_val += p_price * t.get("target_sheets", 1.0) * 1000
-                            t_target_cost += t.get("target_cost", 0)
-                            # 依時間比例估計股息入帳趨勢
-                            t_div += t.get("dividends_received", 0)
-
-            t_net_arb = (t_target_val - t_target_cost + t_div) - t_interest
-            timeline_records.append({
-                "日期": d.strftime("%Y-%m-%d"),
-                "💳 累計借款金額": round(t_loan),
-                "📈 轉投資總市值": round(t_target_val),
-                "🔥 實質累計淨套利": round(t_net_arb)
-            })
-
-        if timeline_records:
-            df_chart = pd.DataFrame(timeline_records).set_index("日期")
-            st.line_chart(df_chart, use_container_width=True)
-            st.caption("💡 曲線圖顯示質押資金槓桿與實質淨套利隨時間推移的累積增長軌跡。")
 
 # --- 彙整總表與操作按鈕 ---
 header_col1, header_col2 = st.columns([4, 1.2])
