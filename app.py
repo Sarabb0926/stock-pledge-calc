@@ -384,7 +384,7 @@ def project_form_dialog(edit_item=None):
         p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"inp_rate_{dlg_id}")
         p_date = st.date_input("質押/存入開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"inp_date_{dlg_id}")
 
-    # 2. 🎯 轉投資標的設定（移至還款前）
+    # 2. 🎯 轉投資標的設定
     st.markdown("---")
     st.markdown("##### 🎯 轉投資標的設定")
     
@@ -422,7 +422,7 @@ def project_form_dialog(edit_item=None):
                 st.session_state[f"cur_dlg_targets_{dlg_id}"].pop()
                 st.rerun()
 
-    # 3. 💵 還款與繳息時間軸模組（移至轉投資下方）
+    # 3. 💵 還款與繳息時間軸模組
     st.markdown("---")
     st.markdown("##### 💵 還款與繳息時間軸記錄")
     st.caption("每次還本金或繳利息皆可在此新增一筆記錄，輸入錯誤可直接點右側 🗑️ 刪除。")
@@ -523,6 +523,7 @@ total_remaining_loan = 0.0
 total_orig_loan = 0.0
 total_repaid_amount = 0.0
 total_repaid_interest = 0.0
+total_accrued_interest_gross = 0.0
 total_interest_paid = 0.0
 total_target_value = 0.0
 total_target_cost = 0.0
@@ -568,8 +569,10 @@ for item in st.session_state.pledges:
 
     days_pledged = max((end_calc_date - item["pledge_date"]).days, 1)
     
+    # 累計總質借利息（毛額）與未結未繳利息
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
+    total_accrued_interest_gross += accrued_interest
     total_interest_paid += unpaid_interest
 
     proj_target_val = 0.0
@@ -650,7 +653,7 @@ for item in st.session_state.pledges:
 # ⚖️ 券商標準公式：總負債 = 剩餘未償本金 + 累計未結利息
 total_liability = total_remaining_loan + total_interest_paid
 overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
-total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - (total_interest_paid + total_repaid_interest)
+total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_accrued_interest_gross
 
 # --- 頂部儀表板 ---
 st.divider()
@@ -680,8 +683,10 @@ with m3:
     else:
         st.metric("⚡ 整戶總維持率", f"{overall_maintenance_ratio:.2f}%", delta=ratio_delta_text)
 
+# 頂部第 4 欄：維持原本依天數成長的「累計總質借利息」，下方顯示「已繳息」
 int_delta_str = f"已繳息 ${total_repaid_interest:,.0f}" if total_repaid_interest > 0 else f"總配息 ${total_dividends:,.0f}"
-m4.metric("💸 累計未結利息", f"${total_interest_paid:,.0f}", delta=int_delta_str)
+m4.metric("💸 累計總質借利息", f"${total_accrued_interest_gross:,.0f}", delta=int_delta_str)
+
 m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
 
 st.divider()
@@ -730,7 +735,6 @@ with tab_proj:
 
             c_card, c_btn = st.columns([11, 1.2])
             with c_card:
-                # 去除行首縮排，防止 Markdown 誤判為 Code Block 造成 HTML 標籤外洩
                 card_html = (
                     f'<div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">'
                     f'<div>'
