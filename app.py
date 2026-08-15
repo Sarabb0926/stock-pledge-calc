@@ -29,24 +29,6 @@ div.stButton > button.orange-btn:hover {
     box-shadow: 0 4px 10px rgba(255, 107, 34, 0.4) !important;
 }
 
-/* 彈窗儲存按鈕：白底藍字風格 */
-div[data-testid="stFormSubmitButton"] > button {
-    background-color: #ffffff !important;
-    color: #1976d2 !important;
-    border: 1.5px solid #1976d2 !important;
-    font-weight: bold !important;
-    font-size: 15px !important;
-    border-radius: 8px !important;
-    box-shadow: 0 2px 4px rgba(25, 118, 210, 0.1) !important;
-    transition: all 0.2s ease !important;
-}
-div[data-testid="stFormSubmitButton"] > button:hover {
-    background-color: #f0f7ff !important;
-    color: #1565c0 !important;
-    border-color: #1565c0 !important;
-    box-shadow: 0 4px 8px rgba(25, 118, 210, 0.2) !important;
-}
-
 /* 卡片排版 */
 .project-card-grid {
     flex-grow: 1;
@@ -112,6 +94,16 @@ div[data-testid="stFormSubmitButton"] > button:hover {
     display: inline-block;
 }
 
+.timeline-tag {
+    font-size: 11px;
+    color: #555;
+    background: #f8f9fa;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border-left: 2px solid #1976d2;
+    margin-top: 2px;
+}
+
 @media (max-width: 900px) {
     .project-card-grid {
         grid-template-columns: 1fr;
@@ -122,7 +114,7 @@ div[data-testid="stFormSubmitButton"] > button:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 群益 1.5 年借貸週期監控 · 整戶維持率警報")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 群益 1.5 年週期監控")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -164,7 +156,7 @@ def parse_sheet_date(date_val) -> date:
             return date.today()
 
 def load_pledges_from_cloud():
-    """從 Google Sheets 讀取專案資料"""
+    """從 Google Sheets 讀取專案資料（包含轉投資與還款時間軸）"""
     if "AKfycb" not in GSHEET_API_URL:
         return None
     try:
@@ -176,7 +168,6 @@ def load_pledges_from_cloud():
                 for row in data:
                     t_json = row.get("targets_json", "[]")
                     targets = json.loads(t_json) if isinstance(t_json, str) else t_json
-                    
                     fixed_targets = []
                     for t in targets:
                         code_norm = normalize_tw_code(t.get("target_code", ""))
@@ -188,9 +179,30 @@ def load_pledges_from_cloud():
                                 "dividends_received": float(t.get("dividends_received", 0))
                             })
 
+                    # 解析多筆還款/繳息時間軸
+                    r_json = row.get("repayments_json", "[]")
+                    repayments = json.loads(r_json) if isinstance(r_json, str) else r_json
+                    fixed_repayments = []
+                    if isinstance(repayments, list):
+                        for r in repayments:
+                            fixed_repayments.append({
+                                "type": str(r.get("type", "償還本金")),
+                                "amount": float(r.get("amount", 0)),
+                                "date": parse_sheet_date(r.get("date"))
+                            })
+
+                    # 兼容舊版單一欄位
+                    if not fixed_repayments:
+                        old_repaid = float(row.get("repaid_amount", 0))
+                        old_repaid_int = float(row.get("repaid_interest", 0))
+                        old_date = parse_sheet_date(row.get("repaid_date")) if row.get("repaid_date") else date.today()
+                        if old_repaid > 0:
+                            fixed_repayments.append({"type": "償還本金", "amount": old_repaid, "date": old_date})
+                        if old_repaid_int > 0:
+                            fixed_repayments.append({"type": "繳納利息", "amount": old_repaid_int, "date": old_date})
+
                     p_id = int(row.get("id", 1))
                     raw_name = str(row.get("project_name", "")).strip()
-                    
                     if not raw_name:
                         raw_name = f"專案 #{p_id}"
                     elif "T" in raw_name and "Z" in raw_name and len(raw_name) > 20:
@@ -203,13 +215,11 @@ def load_pledges_from_cloud():
                         "pledge_sheets": float(row.get("pledge_sheets", 0.0)),
                         "pledge_cost": float(row.get("pledge_cost", 0)),
                         "loan_amount": float(row.get("loan_amount", 0)),
-                        "repaid_amount": float(row.get("repaid_amount", 0)),
-                        "repaid_interest": float(row.get("repaid_interest", 0)),
                         "rollover_count": int(row.get("rollover_count", 0)),
-                        "repaid_date": parse_sheet_date(row.get("repaid_date")) if row.get("repaid_date") else None,
                         "interest_rate": float(row.get("interest_rate", 2.3)),
                         "pledge_date": parse_sheet_date(row.get("pledge_date")),
-                        "targets": fixed_targets
+                        "targets": fixed_targets,
+                        "repayments": fixed_repayments
                     })
                 return parsed_list
     except Exception:
@@ -224,7 +234,19 @@ def save_pledges_to_cloud(pledges_list):
         flat_data = []
         for p in pledges_list:
             p_code_norm = normalize_tw_code(p['pledge_code'])
-            r_date_str = f"'{p['repaid_date'].strftime('%Y-%m-%d')}" if p.get("repaid_date") else ""
+            
+            # 將還款清單轉為 JSON 字串
+            repayments_clean = []
+            for r in p.get("repayments", []):
+                repayments_clean.append({
+                    "type": r["type"],
+                    "amount": float(r["amount"]),
+                    "date": r["date"].strftime("%Y-%m-%d") if isinstance(r["date"], (date, datetime)) else str(r["date"])
+                })
+
+            total_repaid_p = sum(r["amount"] for r in repayments_clean if r["type"] == "償還本金")
+            total_repaid_i = sum(r["amount"] for r in repayments_clean if r["type"] == "繳納利息")
+
             flat_data.append({
                 "id": int(p["id"]),
                 "project_name": f"'{str(p['project_name']).strip()}",
@@ -232,13 +254,12 @@ def save_pledges_to_cloud(pledges_list):
                 "pledge_sheets": float(p["pledge_sheets"]),
                 "pledge_cost": float(p["pledge_cost"]),
                 "loan_amount": float(p["loan_amount"]),
-                "repaid_amount": float(p.get("repaid_amount", 0)),
-                "repaid_interest": float(p.get("repaid_interest", 0)),
+                "repaid_amount": total_repaid_p,
+                "repaid_interest": total_repaid_i,
                 "rollover_count": int(p.get("rollover_count", 0)),
-                "repaid_date": r_date_str,
-                "interest_rate": float(p["interest_rate"]),
                 "pledge_date": f"'{p['pledge_date'].strftime('%Y-%m-%d')}",
-                "targets_json": json.dumps(p["targets"], ensure_ascii=False)
+                "targets_json": json.dumps(p["targets"], ensure_ascii=False),
+                "repayments_json": json.dumps(repayments_clean, ensure_ascii=False)
             })
         
         res = requests.post(GSHEET_API_URL, json=flat_data, timeout=8)
@@ -315,31 +336,25 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
-def clear_dialog_state(dlg_id):
-    """徹底清理彈窗內部各欄位暫存快取，確保重新打開時資料乾淨"""
-    prefix_list = [
-        f"f_name_{dlg_id}", f"f_code_{dlg_id}", f"f_sheets_{dlg_id}", f"f_cost_{dlg_id}",
-        f"f_roll_{dlg_id}", f"f_loan_{dlg_id}", f"f_rate_{dlg_id}", f"f_date_{dlg_id}",
-        f"f_repaid_{dlg_id}", f"f_repaid_int_{dlg_id}", f"f_rdate_{dlg_id}", f"cur_dlg_targets_{dlg_id}"
-    ]
-    for k in list(st.session_state.keys()):
-        if any(k.startswith(p) for p in prefix_list):
-            del st.session_state[k]
-
-# --- 彈窗表單對話盒 ---
+# --- 彈窗表單對話盒（含動態還款時間軸） ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
     dlg_id = str(edit_item["id"]) if is_edit else "new"
 
-    curr_targets = [dict(t) for t in edit_item.get("targets", [])] if is_edit else [{
-        "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
-    }]
-    if not curr_targets:
-        curr_targets = [{"target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0}]
-
+    # 初始化轉投資標的
     if f"cur_dlg_targets_{dlg_id}" not in st.session_state:
-        st.session_state[f"cur_dlg_targets_{dlg_id}"] = curr_targets
+        if is_edit and edit_item.get("targets"):
+            st.session_state[f"cur_dlg_targets_{dlg_id}"] = [dict(t) for t in edit_item["targets"]]
+        else:
+            st.session_state[f"cur_dlg_targets_{dlg_id}"] = [{"target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0}]
+
+    # 初始化還款時間軸紀錄
+    if f"cur_dlg_repayments_{dlg_id}" not in st.session_state:
+        if is_edit and edit_item.get("repayments"):
+            st.session_state[f"cur_dlg_repayments_{dlg_id}"] = [dict(r) for r in edit_item["repayments"]]
+        else:
+            st.session_state[f"cur_dlg_repayments_{dlg_id}"] = []
 
     init_name = str(edit_item["project_name"]) if is_edit else ""
     if "T" in init_name and "Z" in init_name and len(init_name) > 20:
@@ -347,74 +362,119 @@ def project_form_dialog(edit_item=None):
 
     st.markdown(f"#### {'✏️ 修改質押專案：' + init_name if is_edit else '➕ 建立全新質押專案'}")
     
-    with st.form(key=f"pledge_modal_form_{dlg_id}"):
-        p_name = st.text_input("專案名稱", value=init_name if init_name else "新質押專案", key=f"f_name_{dlg_id}")
+    p_name = st.text_input("專案名稱", value=init_name if init_name else "新質押專案", key=f"inp_name_{dlg_id}")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        p_code_val = str(edit_item["pledge_code"]) if is_edit else ""
+        if p_code_val == "0":
+            p_code_val = "0"
+        p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_val, key=f"inp_code_{dlg_id}")
+        p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"inp_sheets_{dlg_id}")
+        p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"inp_cost_{dlg_id}")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            p_code_val = str(edit_item["pledge_code"]) if is_edit else ""
-            if p_code_val == "0":
-                p_code_val = "0"
-            p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_val, key=f"f_code_{dlg_id}")
-            p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"f_sheets_{dlg_id}")
-            p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_id}")
-            
-            curr_roll = int(edit_item.get("rollover_count", 0)) if is_edit else 0
-            p_rollover = st.selectbox(
-                "質押展延狀態 (群益最長 1.5 年 / 展延 2 次)",
-                options=[0, 1, 2],
-                index=curr_roll,
-                format_func=lambda x: {0: "0 次 (首期 0~6個月)", 1: "1 次 (展延中#1 / 6~12個月)", 2: "2 次 (展延中#2 / 12~18個月末期)"}[x],
-                key=f"f_roll_{dlg_id}"
-            )
-        with col2:
-            p_loan = st.number_input("原始借款金額 (元，存入擔保品未借請填 0)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
-            p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"f_rate_{dlg_id}")
-            p_date = st.date_input("質押/存入開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"f_date_{dlg_id}")
-        
-        st.markdown("---")
-        st.markdown("##### 💵 還款與繳息紀錄")
-        r_col1, r_col2, r_col3 = st.columns(3)
-        with r_col1:
-            p_repaid = st.number_input("已償還本金 (元)", min_value=0, value=int(edit_item.get("repaid_amount", 0)) if is_edit else 0, key=f"f_repaid_{dlg_id}")
-        with r_col2:
-            p_repaid_int = st.number_input("已償還/繳納利息 (元)", min_value=0, value=int(edit_item.get("repaid_interest", 0)) if is_edit else 0, key=f"f_repaid_int_{dlg_id}")
-        with r_col3:
-            default_r_date = edit_item.get("repaid_date") if (is_edit and edit_item.get("repaid_date")) else date.today()
-            p_repaid_date = st.date_input("最後還款/繳息日期", value=default_r_date, key=f"f_rdate_{dlg_id}")
+        curr_roll = int(edit_item.get("rollover_count", 0)) if is_edit else 0
+        p_rollover = st.selectbox(
+            "質押展延狀態 (群益最長 1.5 年 / 展延 2 次)",
+            options=[0, 1, 2],
+            index=curr_roll,
+            format_func=lambda x: {0: "0 次 (首期 0~6個月)", 1: "1 次 (展延中#1 / 6~12個月)", 2: "2 次 (展延中#2 / 12~18個月末期)"}[x],
+            key=f"inp_roll_{dlg_id}"
+        )
+    with col2:
+        p_loan = st.number_input("原始借款金額 (元，存入擔保品未借請填 0)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"inp_loan_{dlg_id}")
+        p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"inp_rate_{dlg_id}")
+        p_date = st.date_input("質押/存入開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"inp_date_{dlg_id}")
 
-        st.markdown("---")
-        st.markdown("##### 🎯 轉投資標的設定")
+    # --- 💵 還款與繳息時間軸模組 ---
+    st.markdown("---")
+    st.markdown("##### 💵 還款與繳息時間軸記錄")
+    st.caption("每次還本金或繳利息皆可在此新增一筆記錄，輸入錯誤可直接點右側 🗑️ 刪除。")
+
+    rep_list = st.session_state[f"cur_dlg_repayments_{dlg_id}"]
+    updated_repayments = []
+    
+    for r_idx, r in enumerate(rep_list):
+        rc1, rc2, rc3, rc4 = st.columns([1.5, 2, 2, 0.8])
+        with rc1:
+            r_type = st.selectbox("類型", options=["償還本金", "繳納利息"], index=0 if r.get("type") == "償還本金" else 1, key=f"r_type_{dlg_id}_{r_idx}")
+        with rc2:
+            r_date = st.date_input("日期", value=r.get("date", date.today()), key=f"r_date_{dlg_id}_{r_idx}")
+        with rc3:
+            r_amt = st.number_input("金額 (元)", min_value=0, value=int(r.get("amount", 0)), step=1000, key=f"r_amt_{dlg_id}_{r_idx}")
+        with rc4:
+            st.write("")
+            st.write("")
+            if st.button("🗑️", key=f"btn_del_rep_{dlg_id}_{r_idx}", help="刪除此筆還款記錄"):
+                st.session_state[f"cur_dlg_repayments_{dlg_id}"].pop(r_idx)
+                st.rerun()
         
-        updated_targets = []
-        target_list = st.session_state[f"cur_dlg_targets_{dlg_id}"]
-        for idx, t in enumerate(target_list):
-            st.markdown(f"**轉投資標的 #{idx+1}**")
-            tc1, tc2, tc3, tc4 = st.columns(4)
-            with tc1:
-                t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"d_tc_{dlg_id}_{idx}")
-            with tc2:
-                t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"d_ts_{dlg_id}_{idx}")
-            with tc3:
-                t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"d_tcost_{dlg_id}_{idx}")
-            with tc4:
-                t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"d_tdiv_{dlg_id}_{idx}")
-            
-            updated_targets.append({
-                "target_code": normalize_tw_code(t_code),
-                "target_sheets": t_sheets,
-                "target_cost": t_cost,
-                "dividends_received": t_div
+        updated_repayments.append({
+            "type": r_type,
+            "date": r_date,
+            "amount": r_amt
+        })
+
+    if st.button("➕ 新增一筆還款/繳息記錄", key=f"btn_add_rep_{dlg_id}"):
+        st.session_state[f"cur_dlg_repayments_{dlg_id}"].append({
+            "type": "償還本金",
+            "date": date.today(),
+            "amount": 0
+        })
+        st.rerun()
+
+    # --- 🎯 轉投資標的模組 ---
+    st.markdown("---")
+    st.markdown("##### 🎯 轉投資標的設定")
+    
+    updated_targets = []
+    target_list = st.session_state[f"cur_dlg_targets_{dlg_id}"]
+    for idx, t in enumerate(target_list):
+        st.markdown(f"**轉投資標的 #{idx+1}**")
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1:
+            t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"d_tc_{dlg_id}_{idx}")
+        with tc2:
+            t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"d_ts_{dlg_id}_{idx}")
+        with tc3:
+            t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"d_tcost_{dlg_id}_{idx}")
+        with tc4:
+            t_div = st.number_input("已領股息總額 (元)", min_value=0, value=int(t.get("dividends_received", 0)), key=f"d_tdiv_{dlg_id}_{idx}")
+        
+        updated_targets.append({
+            "target_code": normalize_tw_code(t_code),
+            "target_sheets": t_sheets,
+            "target_cost": t_cost,
+            "dividends_received": t_div
+        })
+
+    t_b1, t_b2 = st.columns(2)
+    with t_b1:
+        if st.button("➕ 增加轉投資標的", key=f"btn_add_t_{dlg_id}", use_container_width=True):
+            st.session_state[f"cur_dlg_targets_{dlg_id}"].append({
+                "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
             })
+            st.rerun()
+    with t_b2:
+        if len(st.session_state[f"cur_dlg_targets_{dlg_id}"]) > 1:
+            if st.button("🗑️ 減少轉投資標的", key=f"btn_rm_t_{dlg_id}", use_container_width=True):
+                st.session_state[f"cur_dlg_targets_{dlg_id}"].pop()
+                st.rerun()
 
-        submit_save = st.form_submit_button("💾 儲存並同步至 Google Sheets", use_container_width=True)
-
-        if submit_save:
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # 底部儲存與刪除操作
+    col_sav, col_del = st.columns([3, 1])
+    with col_sav:
+        if st.button("💾 儲存並同步至 Google Sheets", type="primary", use_container_width=True, key=f"btn_save_main_{dlg_id}"):
             new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
             valid_targets = [t for t in updated_targets if t["target_code"] not in ["0", ""]]
+            valid_repayments = [r for r in updated_repayments if r["amount"] > 0]
             
+            # 展延智慧判定
+            has_paid_interest = any(r["type"] == "繳納利息" and r["amount"] > 0 for r in valid_repayments)
             final_rollover = p_rollover
-            if p_repaid_int > 0 and final_rollover == 0:
+            if has_paid_interest and final_rollover == 0:
                 final_rollover = 1
 
             final_name = p_name.strip() if p_name.strip() else f"專案 #{new_id}"
@@ -426,13 +486,11 @@ def project_form_dialog(edit_item=None):
                 "pledge_sheets": p_sheets if clean_pledge_code != "0" else 0.0,
                 "pledge_cost": p_cost if clean_pledge_code != "0" else 0,
                 "loan_amount": p_loan,
-                "repaid_amount": p_repaid,
-                "repaid_interest": p_repaid_int,
                 "rollover_count": final_rollover,
-                "repaid_date": p_repaid_date if (p_repaid > 0 or p_repaid_int > 0) else None,
                 "interest_rate": p_rate,
                 "pledge_date": p_date,
-                "targets": valid_targets
+                "targets": valid_targets,
+                "repayments": valid_repayments
             }
             
             if is_edit:
@@ -444,28 +502,22 @@ def project_form_dialog(edit_item=None):
                 st.session_state.pledges.append(new_project)
             
             save_pledges_to_cloud(st.session_state.pledges)
-            clear_dialog_state(dlg_id)
+            if f"cur_dlg_targets_{dlg_id}" in st.session_state:
+                del st.session_state[f"cur_dlg_targets_{dlg_id}"]
+            if f"cur_dlg_repayments_{dlg_id}" in st.session_state:
+                del st.session_state[f"cur_dlg_repayments_{dlg_id}"]
             st.success("✅ 專案已儲存並同步至雲端！")
             st.rerun()
 
-    b_col1, b_col2, b_col3 = st.columns([1, 1, 1])
-    with b_col1:
-        if st.button("➕ 增加轉投資標的", key=f"btn_add_t_{dlg_id}", use_container_width=True):
-            st.session_state[f"cur_dlg_targets_{dlg_id}"].append({
-                "target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0
-            })
-            st.rerun()
-    with b_col2:
-        if len(st.session_state[f"cur_dlg_targets_{dlg_id}"]) > 1:
-            if st.button("🗑️ 減少轉投資標的", key=f"btn_rm_t_{dlg_id}", use_container_width=True):
-                st.session_state[f"cur_dlg_targets_{dlg_id}"].pop()
-                st.rerun()
-    with b_col3:
+    with col_del:
         if is_edit:
             if st.button("❌ 刪除此專案", key=f"btn_del_p_{dlg_id}", use_container_width=True):
                 st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != edit_item["id"]]
                 save_pledges_to_cloud(st.session_state.pledges)
-                clear_dialog_state(dlg_id)
+                if f"cur_dlg_targets_{dlg_id}" in st.session_state:
+                    del st.session_state[f"cur_dlg_targets_{dlg_id}"]
+                if f"cur_dlg_repayments_{dlg_id}" in st.session_state:
+                    del st.session_state[f"cur_dlg_repayments_{dlg_id}"]
                 st.rerun()
 
 # --- 資料計算與彙整 ---
@@ -483,15 +535,18 @@ project_display_data = []
 
 for item in st.session_state.pledges:
     p_code_norm = normalize_tw_code(item["pledge_code"])
-    repaid_amt = item.get("repaid_amount", 0.0)
-    repaid_int = item.get("repaid_interest", 0.0)
-    rollover = int(item.get("rollover_count", 0))
     orig_loan = item["loan_amount"]
-    remaining_loan = max(orig_loan - repaid_amt, 0.0)
     
+    # 從時間軸動態加總還款與繳息
+    repayments_list = item.get("repayments", [])
+    repaid_amt = sum(r["amount"] for r in repayments_list if r.get("type") == "償還本金")
+    repaid_int = sum(r["amount"] for r in repayments_list if r.get("type") == "繳納利息")
+    
+    remaining_loan = max(orig_loan - repaid_amt, 0.0)
     is_collateral_only = (orig_loan == 0 and p_code_norm != "0" and item.get("pledge_sheets", 0) > 0)
     is_closed = (remaining_loan == 0 and orig_loan > 0)
-    
+    rollover = int(item.get("rollover_count", 0))
+
     if p_code_norm == "0" or item.get("pledge_sheets", 0) == 0:
         current_collateral_val = 0.0
         p_price = 0.0
@@ -509,9 +564,16 @@ for item in st.session_state.pledges:
     total_repaid_amount += repaid_amt
     total_repaid_interest += repaid_int
 
-    end_calc_date = item["repaid_date"] if (is_closed and item.get("repaid_date")) else date.today()
+    # 若已結清，取最後一筆還款日作為結算日
+    if is_closed and repayments_list:
+        latest_r_date = max([r["date"] if isinstance(r["date"], (date, datetime)) else parse_sheet_date(r["date"]) for r in repayments_list])
+        end_calc_date = latest_r_date
+    else:
+        end_calc_date = date.today()
+
     days_pledged = max((end_calc_date - item["pledge_date"]).days, 1)
     
+    # 總質借應計利息與未結未繳利息
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
     total_interest_paid += unpaid_interest
@@ -539,7 +601,7 @@ for item in st.session_state.pledges:
     target_unrealized_gain = proj_target_val - proj_target_cost
     net_arbitrage = (target_unrealized_gain + proj_dividends) - accrued_interest
 
-    # 🎯 狀態標籤判定
+    # 狀態標籤判定
     days_to_refinance = max(540 - days_pledged, 0)
     if is_collateral_only:
         status_html = "<span class='badge-collateral'>🛡️ 擔保品</span>"
@@ -560,6 +622,13 @@ for item in st.session_state.pledges:
         status_html = "<span class='badge-active'>⚡ 進行中 (首期 1/3)</span>"
         time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
 
+    # 產生時間軸顯示 HTML
+    timeline_items_html = []
+    for r in repayments_list:
+        r_dt_str = r['date'].strftime('%Y/%m/%d') if isinstance(r['date'], (date, datetime)) else str(r['date'])
+        timeline_items_html.append(f"<div class='timeline-tag'><b>{r['type']}</b> {r_dt_str}：${r['amount']:,.0f}</div>")
+    timeline_full_html = "".join(timeline_items_html) if timeline_items_html else ""
+
     project_display_data.append({
         "item_obj": item,
         "id": item["id"],
@@ -579,6 +648,7 @@ for item in st.session_state.pledges:
         "days_rate": f"{days_pledged}天 / {item['interest_rate']}%",
         "interest": f"${accrued_interest:,.0f}",
         "unpaid_interest": unpaid_interest,
+        "timeline_html": timeline_full_html,
         "targets": "<br>".join(target_summary_list) if target_summary_list else "無",
         "target_val": f"${proj_target_val:,.0f}",
         "dividends": f"${proj_dividends:,.0f}",
@@ -633,7 +703,10 @@ with tab_proj:
         st.subheader("📋 專案明細列表")
     with header_col2:
         if st.button("➕ 新增質押專案", key="btn_add_proj", help="點擊建立新的質押套利專案", use_container_width=True):
-            clear_dialog_state("new")
+            if "cur_dlg_targets_new" in st.session_state:
+                del st.session_state["cur_dlg_targets_new"]
+            if "cur_dlg_repayments_new" in st.session_state:
+                del st.session_state["cur_dlg_repayments_new"]
             project_form_dialog(None)
 
     if project_display_data:
@@ -652,7 +725,7 @@ with tab_proj:
             if r["is_collateral_only"]:
                 loan_display_html = "<b>借款金額：</b>$0 (未借款)"
             elif r["repaid_amt"] > 0:
-                loan_display_html = f"<b>未還借款：</b>${r['remaining_loan']:,.0f}<br><span style='font-size:11px; color:#2e7d32;'>已還本金 ${r['repaid_amt']:,.0f}</span>"
+                loan_display_html = f"<b>未還借款：</b>${r['remaining_loan']:,.0f}<br><span style='font-size:11px; color:#2e7d32;'>原借 ${r['orig_loan']:,.0f} (已還 ${r['repaid_amt']:,.0f})</span>"
             else:
                 loan_display_html = f"<b>借款金額：</b>${r['orig_loan']:,.0f}"
 
@@ -679,6 +752,7 @@ with tab_proj:
                     <div>
                         <div style="font-size: 13px;">{loan_display_html}</div>
                         <div style="font-size: 12px; margin-top: 3px;">{int_display_html}</div>
+                        {r['timeline_html']}
                     </div>
                     <div>
                         <div style="font-size: 13px;"><b>轉投資：</b>{r['targets']}</div>
@@ -695,7 +769,10 @@ with tab_proj:
                 st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
                 if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", use_container_width=True):
                     p_dlg_id = str(r['id'])
-                    clear_dialog_state(p_dlg_id)
+                    if f"cur_dlg_targets_{p_dlg_id}" in st.session_state:
+                        del st.session_state[f"cur_dlg_targets_{p_dlg_id}"]
+                    if f"cur_dlg_repayments_{p_dlg_id}" in st.session_state:
+                        del st.session_state[f"cur_dlg_repayments_{p_dlg_id}"]
                     project_form_dialog(r["item_obj"])
     else:
         st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
