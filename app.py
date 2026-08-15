@@ -1,9 +1,10 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import json
 import requests
+import re
 
 # 頁面配置
 st.set_page_config(page_title="股票質押與實質套利筆記本", page_icon="📈", layout="wide")
@@ -28,7 +29,6 @@ div.stButton > button.orange-btn:hover {
     box-shadow: 0 4px 10px rgba(255, 107, 34, 0.4) !important;
 }
 
-/* 專案卡片 Grid 等寬嚴格對齊排版 */
 .project-card {
     background-color: #ffffff;
     border-radius: 8px;
@@ -69,10 +69,30 @@ def normalize_tw_code(code_str: str) -> str:
     c = c.replace("'", "")
     if c.isdigit():
         if len(c) <= 2:
-            return c.zfill(4)   # 50 -> 0050, 56 -> 0056
+            return c.zfill(4)
         elif len(c) == 3:
-            return c.zfill(5)   # 878 -> 00878, 919 -> 00919, 929 -> 00929
+            return c.zfill(5)
     return c
+
+def parse_sheet_date(date_val) -> date:
+    """精確解析 Google Sheets 日期，自動校正 UTC 時區漂移問題"""
+    if not date_val:
+        return date.today()
+    d_str = str(date_val).strip()
+    try:
+        if "T" in d_str:
+            # 解析包含時區的 ISO 字串並轉換為台灣時區 (+8 小時)
+            clean_str = d_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_str)
+            dt_tw = dt + timedelta(hours=8)
+            return dt_tw.date()
+        else:
+            return datetime.strptime(d_str.split()[0], "%Y-%m-%d").date()
+    except Exception:
+        try:
+            return datetime.strptime(d_str[:10], "%Y-%m-%d").date()
+        except Exception:
+            return date.today()
 
 def load_pledges_from_cloud():
     """從 Google Sheets 讀取專案資料"""
@@ -99,19 +119,22 @@ def load_pledges_from_cloud():
                                 "dividends_received": float(t.get("dividends_received", 0))
                             })
 
-                    p_name = str(row.get("project_name", "")).strip()
-                    if not p_name or p_name.lower() in ["nan", "null", "none"]:
-                        p_name = f"專案 #{row.get('id', 1)}"
+                    p_id = int(row.get("id", 1))
+                    raw_name = str(row.get("project_name", "")).strip()
+                    
+                    # 防呆：如果專案名稱被存成 ISO 日期字串，給予預設名稱
+                    if not raw_name or "T" in raw_name and "Z" in raw_name:
+                        raw_name = f"質押專案 #{p_id}"
 
                     parsed_list.append({
-                        "id": int(row.get("id", 1)),
-                        "project_name": p_name,
+                        "id": p_id,
+                        "project_name": raw_name,
                         "pledge_code": normalize_tw_code(row.get("pledge_code", "0")),
                         "pledge_sheets": float(row.get("pledge_sheets", 0.0)),
                         "pledge_cost": float(row.get("pledge_cost", 0)),
                         "loan_amount": float(row.get("loan_amount", 0)),
                         "interest_rate": float(row.get("interest_rate", 2.3)),
-                        "pledge_date": datetime.strptime(str(row.get("pledge_date", "2025-01-01")).split("T")[0], "%Y-%m-%d").date(),
+                        "pledge_date": parse_sheet_date(row.get("pledge_date")),
                         "targets": fixed_targets
                     })
                 return parsed_list
@@ -120,7 +143,7 @@ def load_pledges_from_cloud():
     return None
 
 def save_pledges_to_cloud(pledges_list):
-    """將專案資料即時寫入 Google Sheets"""
+    """將專案資料即時寫入 Google Sheets（強制純文字格式）"""
     if "AKfycb" not in GSHEET_API_URL:
         return False, "尚未設定 Google Sheets API 網址"
     try:
@@ -135,7 +158,7 @@ def save_pledges_to_cloud(pledges_list):
                 "pledge_cost": float(p["pledge_cost"]),
                 "loan_amount": float(p["loan_amount"]),
                 "interest_rate": float(p["interest_rate"]),
-                "pledge_date": p["pledge_date"].strftime("%Y-%m-%d"),
+                "pledge_date": f"'{p['pledge_date'].strftime('%Y-%m-%d')}", # 加單引號防時區錯位
                 "targets_json": json.dumps(p["targets"], ensure_ascii=False)
             })
         
@@ -206,7 +229,7 @@ if "pledges" not in st.session_state:
     else:
         st.session_state.pledges = []
 
-# --- 側邊欄：自定義維持率警戒值 (上限提升至 300%) ---
+# --- 側邊欄：自定義維持率警戒值 ---
 with st.sidebar:
     st.header("⚙️ 風險警戒設定")
     custom_warn_ratio = st.slider("⚠️ 警惕維持率警戒線 (%)", min_value=130, max_value=300, value=160, step=5)
@@ -226,10 +249,14 @@ def project_form_dialog(edit_item=None):
     if "cur_dlg_targets" not in st.session_state:
         st.session_state.cur_dlg_targets = curr_targets
 
-    st.markdown(f"#### {'✏️ 修改質押專案：' + str(edit_item['project_name']) if is_edit else '➕ 建立全新質押專案'}")
+    init_name = str(edit_item["project_name"]) if is_edit else ""
+    if "T" in init_name and "Z" in init_name:
+        init_name = f"專案 #{edit_item['id']}"
+
+    st.markdown(f"#### {'✏️ 修改質押專案：' + init_name if is_edit else '➕ 建立全新質押專案'}")
     
     with st.form(key="pledge_modal_form"):
-        p_name = st.text_input("專案名稱", value=str(edit_item["project_name"]) if is_edit else "新質押專案")
+        p_name = st.text_input("專案名稱", value=init_name if init_name else "新質押專案")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -398,30 +425,25 @@ total_liability = total_loan_amount + total_interest_paid
 overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_interest_paid
 
-# --- 頂部儀表板 (支援低於警戒值直接標註紅字) ---
+# --- 頂部儀表板 ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
 m2.metric("💳 總借款金額", f"${total_loan_amount:,.0f}")
 m3.metric("💸 累計總質借利息", f"${total_interest_paid:,.0f}", delta=f"總配息 ${total_dividends:,.0f}")
 
-# 判斷維持率警戒狀態
 is_danger = overall_maintenance_ratio < custom_danger_ratio
 is_warn = overall_maintenance_ratio < custom_warn_ratio
 
 if is_danger:
     ratio_delta_text = f"🚨 低於 {custom_danger_ratio}% 追繳警告！"
-    delta_color_type = "inverse"
 elif is_warn:
     ratio_delta_text = f"⚠️ 警惕區域 (<{custom_warn_ratio}%)"
-    delta_color_type = "inverse"
 else:
     ratio_delta_text = f"✅ 安全範圍 (>{custom_warn_ratio}%)"
-    delta_color_type = "normal"
 
 with m4:
     if is_danger or is_warn:
-        # 低於設定值時，透過 HTML 強制將數字與警告文字渲染為醒目紅字
         st.markdown(f"""
         <div style="padding: 2px 0;">
             <div style="font-size: 14px; color: #555;">⚡ 整戶總維持率</div>
