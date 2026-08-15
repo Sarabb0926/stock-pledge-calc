@@ -51,7 +51,7 @@ div[data-testid="stFormSubmitButton"] > button:hover {
 .project-card-grid {
     flex-grow: 1;
     display: grid;
-    grid-template-columns: 2.2fr 2fr 2fr 2.5fr 2fr;
+    grid-template-columns: 2.3fr 2fr 2fr 2.5fr 2fr;
     gap: 15px;
     align-items: center;
 }
@@ -62,7 +62,7 @@ div[data-testid="stFormSubmitButton"] > button:hover {
     color: #2e7d32;
     padding: 3px 8px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: bold;
     border: 1px solid #c8e6c9;
     display: inline-block;
@@ -73,9 +73,20 @@ div[data-testid="stFormSubmitButton"] > button:hover {
     color: #e65100;
     padding: 3px 8px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: bold;
     border: 1px solid #ffe0b2;
+    display: inline-block;
+}
+
+.badge-refinance {
+    background-color: #ffebee;
+    color: #c62828;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: bold;
+    border: 1px solid #ffcdd2;
     display: inline-block;
 }
 
@@ -84,7 +95,7 @@ div[data-testid="stFormSubmitButton"] > button:hover {
     color: #546e7a;
     padding: 3px 8px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: bold;
     border: 1px solid #cfd8dc;
     display: inline-block;
@@ -100,7 +111,7 @@ div[data-testid="stFormSubmitButton"] > button:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 還款與展延追蹤 · 整戶維持率監控")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 群益 1.5 年借貸週期監控 · 整戶維持率警報")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -325,7 +336,16 @@ def project_form_dialog(edit_item=None):
             p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_val, key=f"f_code_{dlg_id}")
             p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"f_sheets_{dlg_id}")
             p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"f_cost_{dlg_id}")
-            p_rollover = st.selectbox("質押展延次數 (最多展延 2 次)", options=[0, 1, 2], index=int(edit_item.get("rollover_count", 0)) if is_edit else 0, key=f"f_roll_{dlg_id}")
+            
+            # 展延次數選單（支援群益 2 次展延 ＝ 最長 1.5 年）
+            curr_roll = int(edit_item.get("rollover_count", 0)) if is_edit else 0
+            p_rollover = st.selectbox(
+                "質押展延狀態 (群益最長 1.5 年 / 展延 2 次)",
+                options=[0, 1, 2],
+                index=curr_roll,
+                format_func=lambda x: {0: "0 次 (首期 0~6個月)", 1: "1 次 (展延中#1 / 6~12個月)", 2: "2 次 (展延中#2 / 12~18個月末期)"}[x],
+                key=f"f_roll_{dlg_id}"
+            )
         with col2:
             p_loan = st.number_input("原始借款金額 (元)", min_value=0, value=int(edit_item["loan_amount"]) if is_edit else 0, key=f"f_loan_{dlg_id}")
             p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"f_rate_{dlg_id}")
@@ -337,10 +357,10 @@ def project_form_dialog(edit_item=None):
         with r_col1:
             p_repaid = st.number_input("已償還本金 (元)", min_value=0, value=int(edit_item.get("repaid_amount", 0)) if is_edit else 0, key=f"f_repaid_{dlg_id}")
         with r_col2:
-            p_repaid_int = st.number_input("已償還利息 (元)", min_value=0, value=int(edit_item.get("repaid_interest", 0)) if is_edit else 0, key=f"f_repaid_int_{dlg_id}")
+            p_repaid_int = st.number_input("已償還/繳納利息 (元)", min_value=0, value=int(edit_item.get("repaid_interest", 0)) if is_edit else 0, key=f"f_repaid_int_{dlg_id}")
         with r_col3:
             default_r_date = edit_item.get("repaid_date") if (is_edit and edit_item.get("repaid_date")) else date.today()
-            p_repaid_date = st.date_input("最後還款/結清日期", value=default_r_date, key=f"f_rdate_{dlg_id}")
+            p_repaid_date = st.date_input("最後還款/繳息日期", value=default_r_date, key=f"f_rdate_{dlg_id}")
 
         st.markdown("---")
         st.markdown("##### 🎯 轉投資標的設定")
@@ -372,6 +392,11 @@ def project_form_dialog(edit_item=None):
             new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
             valid_targets = [t for t in updated_targets if t["target_code"] not in ["0", ""]]
             
+            # 若已繳利息且原本展延為0，智慧預設為展延1次
+            final_rollover = p_rollover
+            if p_repaid_int > 0 and final_rollover == 0:
+                final_rollover = 1
+
             final_name = p_name.strip() if p_name.strip() else f"專案 #{new_id}"
             clean_pledge_code = normalize_tw_code(p_code)
             new_project = {
@@ -383,7 +408,7 @@ def project_form_dialog(edit_item=None):
                 "loan_amount": p_loan,
                 "repaid_amount": p_repaid,
                 "repaid_interest": p_repaid_int,
-                "rollover_count": p_rollover,
+                "rollover_count": final_rollover,
                 "repaid_date": p_repaid_date if (p_repaid > 0 or p_repaid_int > 0) else None,
                 "interest_rate": p_rate,
                 "pledge_date": p_date,
@@ -467,6 +492,7 @@ for item in st.session_state.pledges:
     end_calc_date = item["repaid_date"] if (is_closed and item.get("repaid_date")) else date.today()
     days_pledged = max((end_calc_date - item["pledge_date"]).days, 1)
     
+    # 總質借利息與未繳未結利息計算
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
     total_interest_paid += unpaid_interest
@@ -494,19 +520,30 @@ for item in st.session_state.pledges:
     target_unrealized_gain = proj_target_val - proj_target_cost
     net_arbitrage = (target_unrealized_gain + proj_dividends) - accrued_interest
 
-    # 狀態標籤判定
+    # 🎯 狀態標籤判定（最前置）
+    days_to_refinance = max(540 - days_pledged, 0)
     if is_closed:
-        status_html = "<span class='badge-closed'>🟢 已結清</span>"
-    elif rollover > 0:
-        status_html = f"<span class='badge-rollover'>🔄 展延中#{rollover}</span>"
+        status_html = "<span class='badge-closed'>🟢 已結清 (已換約)</span>"
+        time_sub_html = f"{days_pledged}天 / {item['interest_rate']}%"
+    elif days_pledged >= 500 or (rollover >= 2 and days_pledged >= 480):
+        status_html = "<span class='badge-refinance'>⚠️ 滿期提醒：需借新還舊</span>"
+        time_sub_html = f"<span style='color:#c62828; font-weight:bold;'>第{days_pledged}天 (剩{days_to_refinance}天滿期)</span>"
+    elif rollover == 1 or (repaid_int > 0 and rollover == 0):
+        status_html = "<span class='badge-rollover'>🔄 展延中 #1 (第2期)</span>"
+        time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
+    elif rollover == 2:
+        status_html = "<span class='badge-rollover'>🔄 展延中 #2 (末期)</span>"
+        time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
     else:
-        status_html = "<span class='badge-active'>⚡ 進行中</span>"
+        status_html = "<span class='badge-active'>⚡ 進行中 (首期 1/3)</span>"
+        time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
 
     project_display_data.append({
         "item_obj": item,
         "id": item["id"],
         "name": str(item["project_name"]),
         "status_html": status_html,
+        "time_sub_html": time_sub_html,
         "is_closed": is_closed,
         "rollover": rollover,
         "pledge": pledge_display_str,
@@ -605,9 +642,9 @@ with tab_proj:
                 card_html = f"""
                 <div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">
                     <div>
-                        <div style="margin-bottom: 4px;">{r['status_html']}</div>
+                        <div style="margin-bottom: 5px;">{r['status_html']}</div>
                         <div style="font-size: 15px; font-weight: bold; color: #1e88e5; word-break: break-word;">{r['name']}</div>
-                        <div style="font-size: 12px; color: #888; margin-top: 2px;">{r['days_rate']}</div>
+                        <div style="font-size: 11px; color: #888; margin-top: 2px;">{r['time_sub_html']}</div>
                     </div>
                     <div>
                         <div style="font-size: 13px;"><b>質押：</b>{r['pledge']}</div>
