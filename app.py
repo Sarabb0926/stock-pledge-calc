@@ -33,7 +33,7 @@ div.stButton > button.orange-btn:hover {
 .project-card-grid {
     flex-grow: 1;
     display: grid;
-    grid-template-columns: 2.3fr 2fr 2fr 2.5fr 2fr;
+    grid-template-columns: 2.3fr 2.2fr 2fr 2.5fr 2fr;
     gap: 15px;
     align-items: center;
 }
@@ -104,6 +104,17 @@ div.stButton > button.orange-btn:hover {
     margin-top: 2px;
 }
 
+.safe-price-tag {
+    font-size: 11px;
+    color: #c62828;
+    background: #fff8f8;
+    padding: 2px 5px;
+    border-radius: 3px;
+    border: 1px dashed #ef9a9a;
+    margin-top: 3px;
+    display: inline-block;
+}
+
 @media (max-width: 900px) {
     .project-card-grid {
         grid-template-columns: 1fr;
@@ -114,7 +125,7 @@ div.stButton > button.orange-btn:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 券商精準維持率校準")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 追繳底線價格反推 · 群益維持率精準校正")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -123,7 +134,7 @@ DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycb...請貼上你的�
 GSHEET_API_URL = st.secrets.get("GSHEET_API_URL", DEFAULT_API_URL)
 # ==============================================================================
 
-# 常用台股與 ETF 清單（提供搜尋提示）
+# 常用台股與 ETF 清單
 STOCK_OPTIONS_MAP = {
     "00919": "00919 群益台灣精選高息",
     "00878": "00878 國泰永續高股息",
@@ -301,7 +312,7 @@ def save_pledges_to_cloud(pledges_list):
     except Exception as e:
         return False, str(e)
 
-# --- 🚀 官方標準取價 API（精準鎖定最新收盤價與撮合價） ---
+# --- 🚀 官方標準取價 API ---
 @st.cache_data(ttl=120)
 def get_stock_price(symbol: str, use_close_price: bool = True) -> float:
     raw_code = normalize_tw_code(symbol)
@@ -329,8 +340,6 @@ def get_stock_price(symbol: str, use_close_price: bool = True) -> float:
                 result = res_data.get("chart", {}).get("result", [])
                 if result:
                     meta = result[0].get("meta", {})
-                    
-                    # 若啟用券商官方收盤價模式，優先取得前一營業日/當日官方收盤價
                     if use_close_price:
                         closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                         valid_closes = [c for c in closes if c is not None and c > 0]
@@ -453,7 +462,7 @@ def project_form_dialog(edit_item=None):
         p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"inp_rate_{dlg_id}")
         p_date = st.date_input("質押/存入開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"inp_date_{dlg_id}")
 
-    # 2. 🎯 轉投資標的設定（以「股」為單位輸入）
+    # 2. 🎯 轉投資標的設定
     st.markdown("---")
     st.markdown("##### 🎯 轉投資標的設定 (以「股」為單位輸入)")
     
@@ -652,6 +661,7 @@ for item in st.session_state.pledges:
         p_price = 0.0
         pledge_display_str = "無 (動用舊額度)"
         pledge_val_str = "$0"
+        margin_call_html = ""
     else:
         p_price = get_stock_price(p_code_norm, use_close_price=use_official_close)
         current_collateral_val = p_price * item["pledge_sheets"] * 1000
@@ -671,13 +681,32 @@ for item in st.session_state.pledges:
     else:
         end_calc_date = date.today()
 
-    # 券商法定天數計算
     days_pledged = max((end_calc_date - item["pledge_date"]).days, 0)
     
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
     total_accrued_interest_gross += accrued_interest
     total_interest_paid += unpaid_interest
+
+    # 🛡️ 個股追繳底線價格反推試算
+    if not is_collateral_only and not is_closed and p_code_norm != "0" and item.get("pledge_sheets", 0) > 0 and p_price > 0:
+        proj_liability = remaining_loan + unpaid_interest
+        # 130% 追繳防守價
+        danger_stock_price = (proj_liability * (custom_danger_ratio / 100.0)) / (item["pledge_sheets"] * 1000.0)
+        drop_to_danger = ((danger_stock_price - p_price) / p_price) * 100.0
+        
+        # 160% 預警防守價
+        warn_stock_price = (proj_liability * (custom_warn_ratio / 100.0)) / (item["pledge_sheets"] * 1000.0)
+        drop_to_warn = ((warn_stock_price - p_price) / p_price) * 100.0
+        
+        margin_call_html = f"""
+        <div class="safe-price-tag">
+            🚨 追繳價：<b>${danger_stock_price:.2f}</b> ({drop_to_danger:.1f}%)<br>
+            ⚠️ 預警價：<b>${warn_stock_price:.2f}</b> ({drop_to_warn:.1f}%)
+        </div>
+        """
+    else:
+        margin_call_html = ""
 
     proj_target_val = 0.0
     proj_target_cost = 0.0
@@ -743,6 +772,7 @@ for item in st.session_state.pledges:
         "pledge": pledge_display_str,
         "cost": f"${item['pledge_cost']:,.0f}" if p_code_norm != "0" else "$0",
         "pledge_val": pledge_val_str,
+        "margin_call_html": margin_call_html,
         "orig_loan": orig_loan,
         "repaid_amt": repaid_amt,
         "repaid_int": repaid_int,
@@ -847,6 +877,7 @@ with tab_proj:
                     f'<div>'
                     f'<div style="font-size: 13px;"><b>質押：</b>{r["pledge"]}</div>'
                     f'<div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r["pledge_val"]}</div>'
+                    f'{r["margin_call_html"]}'
                     f'</div>'
                     f'<div>'
                     f'<div style="font-size: 13px;">{loan_display_html}</div>'
