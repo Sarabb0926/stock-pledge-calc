@@ -270,7 +270,7 @@ def save_pledges_to_cloud(pledges_list):
                 "repayments_json": json.dumps(repayments_clean, ensure_ascii=False)
             })
         
-        res = requests.post(GSHEET_API_URL, json=flat_data, timeout=8)
+        res = requests.post(GSHEET_API_URL, json=flat_data, timeout=12)
         if res.status_code == 200:
             return True, "雲端同步成功"
         return False, f"HTTP 狀態碼: {res.status_code}"
@@ -347,13 +347,12 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
-# --- 彈窗表單對話盒（持久狀態防閃退） ---
+# --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
     is_edit = edit_item is not None
     dlg_id = str(edit_item["id"]) if is_edit else "new"
 
-    # 初始化轉投資暫存
     t_key = f"dlg_targets_{dlg_id}"
     if t_key not in st.session_state:
         if is_edit and edit_item.get("targets"):
@@ -361,7 +360,6 @@ def project_form_dialog(edit_item=None):
         else:
             st.session_state[t_key] = [{"target_code": "", "target_sheets": 1.0, "target_cost": 0, "dividends_received": 0}]
 
-    # 初始化還款時間軸暫存
     r_key = f"dlg_repayments_{dlg_id}"
     if r_key not in st.session_state:
         if is_edit and edit_item.get("repayments"):
@@ -475,65 +473,70 @@ def project_form_dialog(edit_item=None):
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 底部儲存與刪除操作
+    # 底部儲存與刪除操作（帶 Loading 動畫）
     col_sav, col_del = st.columns([3, 1])
     with col_sav:
         if st.button("💾 儲存並同步至 Google Sheets", type="primary", use_container_width=True, key=f"btn_save_main_{dlg_id}"):
-            new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
-            valid_targets = [t for t in st.session_state[t_key] if t["target_code"] not in ["0", ""]]
-            valid_repayments = [r for r in st.session_state[r_key] if r["amount"] > 0]
-            
-            has_paid_interest = any(r["type"] == "繳納利息" and r["amount"] > 0 for r in valid_repayments)
-            final_rollover = p_rollover
-            if has_paid_interest and final_rollover == 0:
-                final_rollover = 1
+            with st.spinner("⏳ 正在儲存並同步資料至 Google Sheets，請稍候..."):
+                new_id = edit_item["id"] if is_edit else (max([p["id"] for p in st.session_state.pledges], default=0) + 1)
+                valid_targets = [t for t in st.session_state[t_key] if t["target_code"] not in ["0", ""]]
+                valid_repayments = [r for r in st.session_state[r_key] if r["amount"] > 0]
+                
+                has_paid_interest = any(r["type"] == "繳納利息" and r["amount"] > 0 for r in valid_repayments)
+                final_rollover = p_rollover
+                if has_paid_interest and final_rollover == 0:
+                    final_rollover = 1
 
-            final_name = p_name.strip() if p_name.strip() else f"專案 #{new_id}"
-            clean_pledge_code = normalize_tw_code(p_code)
-            new_project = {
-                "id": new_id,
-                "project_name": final_name,
-                "pledge_code": clean_pledge_code,
-                "pledge_sheets": p_sheets if clean_pledge_code != "0" else 0.0,
-                "pledge_cost": p_cost if clean_pledge_code != "0" else 0,
-                "loan_amount": p_loan,
-                "rollover_count": final_rollover,
-                "interest_rate": p_rate,
-                "pledge_date": p_date,
-                "targets": valid_targets,
-                "repayments": valid_repayments
-            }
-            
-            if is_edit:
-                for i, p in enumerate(st.session_state.pledges):
-                    if p["id"] == edit_item["id"]:
-                        st.session_state.pledges[i] = new_project
-                        break
-            else:
-                st.session_state.pledges.append(new_project)
-            
-            save_pledges_to_cloud(st.session_state.pledges)
-            
-            # 清理該彈窗暫存並關閉
-            if t_key in st.session_state:
-                del st.session_state[t_key]
-            if r_key in st.session_state:
-                del st.session_state[r_key]
-            st.session_state.active_dialog_id = None
-            st.success("✅ 專案已儲存並同步至雲端！")
-            st.rerun()
+                final_name = p_name.strip() if p_name.strip() else f"專案 #{new_id}"
+                clean_pledge_code = normalize_tw_code(p_code)
+                new_project = {
+                    "id": new_id,
+                    "project_name": final_name,
+                    "pledge_code": clean_pledge_code,
+                    "pledge_sheets": p_sheets if clean_pledge_code != "0" else 0.0,
+                    "pledge_cost": p_cost if clean_pledge_code != "0" else 0,
+                    "loan_amount": p_loan,
+                    "rollover_count": final_rollover,
+                    "interest_rate": p_rate,
+                    "pledge_date": p_date,
+                    "targets": valid_targets,
+                    "repayments": valid_repayments
+                }
+                
+                if is_edit:
+                    for i, p in enumerate(st.session_state.pledges):
+                        if p["id"] == edit_item["id"]:
+                            st.session_state.pledges[i] = new_project
+                            break
+                else:
+                    st.session_state.pledges.append(new_project)
+                
+                success, msg = save_pledges_to_cloud(st.session_state.pledges)
+                
+                if success:
+                    st.toast("✅ 專案已成功儲存並同步至雲端！")
+                    if t_key in st.session_state:
+                        del st.session_state[t_key]
+                    if r_key in st.session_state:
+                        del st.session_state[r_key]
+                    st.session_state.active_dialog_id = None
+                    st.rerun()
+                else:
+                    st.error(f"❌ 雲端儲存失敗：{msg}")
 
     with col_del:
         if is_edit:
             if st.button("❌ 刪除此專案", key=f"btn_del_p_{dlg_id}", use_container_width=True):
-                st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != edit_item["id"]]
-                save_pledges_to_cloud(st.session_state.pledges)
-                if t_key in st.session_state:
-                    del st.session_state[t_key]
-                if r_key in st.session_state:
-                    del st.session_state[r_key]
-                st.session_state.active_dialog_id = None
-                st.rerun()
+                with st.spinner("🗑️ 正在刪除專案並同步雲端..."):
+                    st.session_state.pledges = [x for x in st.session_state.pledges if x["id"] != edit_item["id"]]
+                    save_pledges_to_cloud(st.session_state.pledges)
+                    if t_key in st.session_state:
+                        del st.session_state[t_key]
+                    if r_key in st.session_state:
+                        del st.session_state[r_key]
+                    st.session_state.active_dialog_id = None
+                    st.toast("🗑️ 專案已成功刪除！")
+                    st.rerun()
 
 # 檢查是否需要主動開啟彈窗（持久保持）
 if st.session_state.active_dialog_id is not None:
