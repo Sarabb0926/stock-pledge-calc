@@ -38,6 +38,15 @@ div.stButton > button.orange-btn:hover {
     align-items: center;
 }
 
+/* 微型動作按鈕 */
+div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+    padding: 0.2rem 0.5rem !important;
+    font-size: 13px !important;
+    min-height: 32px !important;
+    line-height: 1.2 !important;
+    border-radius: 6px !important;
+}
+
 /* 狀態標籤樣式 */
 .badge-collateral {
     background-color: #e3f2fd;
@@ -935,7 +944,7 @@ with tab_proj:
             else:
                 int_display_html = f"<b>利息：</b><span style='color:#d9534f;'>{r['interest']}</span>"
 
-            c_card, c_btn = st.columns([10.5, 1.5])
+            c_card, c_btn = st.columns([11.2, 0.8])
             with c_card:
                 card_html = (
                     f'<div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">'
@@ -965,14 +974,15 @@ with tab_proj:
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
             with c_btn:
-                st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
-                if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", use_container_width=True):
+                st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+                if st.button("✏️", key=f"edit_btn_{r['id']}", help="編輯專案內容", use_container_width=True):
                     st.session_state.active_dialog_id = r["id"]
                     st.rerun()
                 
-                # 🔁 一鍵借新還舊換約按鈕
+                # 🔁 一鍵借新還舊小圖示按鈕
                 if r["can_refinance"] and not r["is_closed"] and not r["is_collateral_only"]:
-                    if st.button("🔁 借新還舊", key=f"refinance_btn_{r['id']}", help="自動結算舊案，並以相同張數與金額建立新週期專案", use_container_width=True):
+                    st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+                    if st.button("🔁", key=f"refinance_btn_{r['id']}", help="借新還舊（換約新期）", use_container_width=True):
                         execute_refinance(r["item_obj"])
     else:
         st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
