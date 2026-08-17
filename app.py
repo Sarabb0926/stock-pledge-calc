@@ -114,7 +114,7 @@ div.stButton > button.orange-btn:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 群益 1.5 年週期監控")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 群益維持率精準校正")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -123,8 +123,30 @@ DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycb...請貼上你的�
 GSHEET_API_URL = st.secrets.get("GSHEET_API_URL", DEFAULT_API_URL)
 # ==============================================================================
 
-def format_sheets(sheets_val) -> str:
-    """直覺化張數格式：整數顯示為 1張、10張；小數零股顯示為 0.07張、3.203張"""
+# 常用台股與 ETF 清單（提供搜尋提示）
+STOCK_OPTIONS_MAP = {
+    "00919": "00919 群益台灣精選高息",
+    "00878": "00878 國泰永續高股息",
+    "0056": "0056 元大高股息",
+    "0050": "0050 元大台灣50",
+    "00929": "00929 復華台灣科技優息",
+    "00713": "00713 元大台灣高息低波",
+    "00922": "00922 國泰台灣領袖50",
+    "00927": "00927 群益半導體收益",
+    "00905": "00905 FT臺灣Smart",
+    "00631L": "00631L 元大台灣50正2",
+    "2330": "2330 台積電",
+    "2317": "2317 鴻海",
+    "2454": "2454 聯發科",
+    "2884": "2884 玉山金",
+    "2887": "2887 台新金",
+    "2881": "2881 富邦金",
+    "2882": "2882 國泰金",
+    "0": "無 (動用舊額度 / 不押股票)"
+}
+
+def format_sheets_display(sheets_val) -> str:
+    """直覺化張數格式：整數顯示 1張、10張；小數零股顯示 0.07張、3.203張"""
     try:
         val = float(sheets_val)
         if val.is_integer():
@@ -135,8 +157,10 @@ def format_sheets(sheets_val) -> str:
         return f"{sheets_val}張"
 
 def normalize_tw_code(code_str: str) -> str:
-    """自動修復被 Google Sheets 吞掉開頭 00 的台股/ETF 代號，並支援 0 或空白判定為無"""
-    c = str(code_str).strip().upper()
+    """自動從下拉選項或字串提取純代號，並修復前綴 00 遺失問題"""
+    if not code_str:
+        return "0"
+    c = str(code_str).strip().split()[0].upper()
     if not c or c in ["0", "NONE", "NULL", "無", "NAN", "''"]:
         return "0"
     c = c.replace("'", "")
@@ -167,7 +191,7 @@ def parse_sheet_date(date_val) -> date:
             return date.today()
 
 def load_pledges_from_cloud():
-    """從 Google Sheets 讀取專案資料（包含轉投資與還款時間軸）"""
+    """從 Google Sheets 讀取專案資料"""
     if "AKfycb" not in GSHEET_API_URL:
         return None
     try:
@@ -378,11 +402,30 @@ def project_form_dialog(edit_item=None):
     
     col1, col2 = st.columns(2)
     with col1:
-        p_code_val = str(edit_item["pledge_code"]) if is_edit else ""
-        if p_code_val == "0":
-            p_code_val = "0"
-        p_code = st.text_input("質押標的代號 (若無新押股票填 0 或留空)", value=p_code_val, key=f"inp_code_{dlg_id}")
-        p_sheets = st.number_input("質押張數 (無新押填 0)", min_value=0.0, value=float(edit_item["pledge_sheets"]) if is_edit else 0.0, step=0.5, key=f"inp_sheets_{dlg_id}")
+        # 下拉提示與自訂輸入整合
+        p_code_raw = str(edit_item["pledge_code"]) if is_edit else ""
+        known_codes = list(STOCK_OPTIONS_MAP.keys())
+        default_index = known_codes.index(p_code_raw) if p_code_raw in known_codes else 0
+
+        p_code_select = st.selectbox(
+            "質押擔保品標的 (支援關鍵字下拉與自訂)",
+            options=known_codes + ["其他 (自行輸入代號)"],
+            index=default_index,
+            format_func=lambda x: STOCK_OPTIONS_MAP.get(x, "其他 (自行輸入代號)"),
+            key=f"sel_code_{dlg_id}"
+        )
+        
+        if p_code_select == "其他 (自行輸入代號)":
+            p_code = st.text_input("請輸入台股代號 (如 2330)", value=p_code_raw if p_code_raw not in known_codes else "", key=f"inp_custom_code_{dlg_id}")
+        else:
+            p_code = p_code_select
+
+        # 質押股數（以「股」為單位，自動換算張數）
+        init_pledge_shares = int(float(edit_item["pledge_sheets"]) * 1000) if is_edit else 0
+        p_shares = st.number_input("質押股數 (股，1000股=1張，無新押填0)", min_value=0, value=init_pledge_shares, step=1000, key=f"inp_shares_{dlg_id}")
+        p_sheets = p_shares / 1000.0
+        st.caption(f"💡 目前換算張數：**{format_sheets_display(p_sheets)}**")
+
         p_cost = st.number_input("質押標的原始成本 (元)", min_value=0, value=int(edit_item["pledge_cost"]) if is_edit else 0, key=f"inp_cost_{dlg_id}")
         
         curr_roll = int(edit_item.get("rollover_count", 0)) if is_edit else 0
@@ -398,9 +441,9 @@ def project_form_dialog(edit_item=None):
         p_rate = st.number_input("借款年利率 (%)", min_value=0.0, value=float(edit_item["interest_rate"]) if is_edit else 2.30, step=0.01, key=f"inp_rate_{dlg_id}")
         p_date = st.date_input("質押/存入開始日期", value=edit_item["pledge_date"] if is_edit else date.today(), key=f"inp_date_{dlg_id}")
 
-    # 2. 🎯 轉投資標的設定
+    # 2. 🎯 轉投資標的設定（以「股」為單位輸入）
     st.markdown("---")
-    st.markdown("##### 🎯 轉投資標的設定")
+    st.markdown("##### 🎯 轉投資標的設定 (以「股」為單位輸入)")
     
     current_targets = st.session_state[t_key]
     updated_targets = []
@@ -409,9 +452,25 @@ def project_form_dialog(edit_item=None):
         st.markdown(f"**轉投資標的 #{idx+1}**")
         tc1, tc2, tc3, tc4 = st.columns(4)
         with tc1:
-            t_code = st.text_input("標的代號", value=t.get("target_code", ""), key=f"d_tc_{dlg_id}_{idx}")
+            t_code_raw = str(t.get("target_code", ""))
+            t_known = list(STOCK_OPTIONS_MAP.keys())
+            t_def_idx = t_known.index(t_code_raw) if t_code_raw in t_known else (len(t_known))
+            t_sel = st.selectbox(
+                "標的代號",
+                options=t_known + ["自訂代號"],
+                index=t_def_idx if t_def_idx < len(t_known) else len(t_known),
+                format_func=lambda x: STOCK_OPTIONS_MAP.get(x, "自訂代號"),
+                key=f"sel_tc_{dlg_id}_{idx}"
+            )
+            if t_sel == "自訂代號":
+                t_code = st.text_input("輸入代號", value=t_code_raw if t_code_raw not in t_known else "", key=f"d_tc_{dlg_id}_{idx}")
+            else:
+                t_code = t_sel
         with tc2:
-            t_sheets = st.number_input("買入張數", min_value=0.01, value=float(t.get("target_sheets", 1.0)), step=0.5, key=f"d_ts_{dlg_id}_{idx}")
+            init_target_shares = int(float(t.get("target_sheets", 1.0)) * 1000)
+            t_shares = st.number_input("買入股數 (股)", min_value=1, value=max(init_target_shares, 1), step=100, key=f"d_ts_shares_{dlg_id}_{idx}")
+            t_sheets = t_shares / 1000.0
+            st.caption(f"換算：**{format_sheets_display(t_sheets)}**")
         with tc3:
             t_cost = st.number_input("買入總成本 (元)", min_value=0, value=int(t.get("target_cost", 0)), key=f"d_tcost_{dlg_id}_{idx}")
         with tc4:
@@ -473,7 +532,7 @@ def project_form_dialog(edit_item=None):
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 底部儲存與刪除操作（帶 Loading 動畫）
+    # 底部儲存與刪除操作
     col_sav, col_del = st.columns([3, 1])
     with col_sav:
         if st.button("💾 儲存並同步至 Google Sheets", type="primary", use_container_width=True, key=f"btn_save_main_{dlg_id}"):
@@ -538,7 +597,7 @@ def project_form_dialog(edit_item=None):
                     st.toast("🗑️ 專案已成功刪除！")
                     st.rerun()
 
-# 檢查是否需要主動開啟彈窗（持久保持）
+# 檢查是否需要主動開啟彈窗
 if st.session_state.active_dialog_id is not None:
     if st.session_state.active_dialog_id == "new":
         project_form_dialog(None)
@@ -584,7 +643,7 @@ for item in st.session_state.pledges:
     else:
         p_price = get_stock_price(p_code_norm)
         current_collateral_val = p_price * item["pledge_sheets"] * 1000
-        pledge_sheets_str = format_sheets(item['pledge_sheets'])
+        pledge_sheets_str = format_sheets_display(item['pledge_sheets'])
         pledge_display_str = f"{p_code_norm} ({pledge_sheets_str})"
         pledge_val_str = f"${current_collateral_val:,.0f} (@${p_price})"
 
@@ -623,7 +682,7 @@ for item in st.session_state.pledges:
         proj_target_cost += t.get("target_cost", 0)
         proj_dividends += t.get("dividends_received", 0)
         
-        t_sheets_str = format_sheets(t_sheets)
+        t_sheets_str = format_sheets_display(t_sheets)
         target_summary_list.append(f"{t_code_norm} ({t_sheets_str} @${t_price})")
 
     total_target_value += proj_target_val
@@ -685,9 +744,8 @@ for item in st.session_state.pledges:
         "arbitrage": net_arbitrage
     })
 
-# ⚖️ 券商標準公式：總負債 = 剩餘未償本金 + 累計未結利息
-total_liability = total_remaining_loan + total_interest_paid
-overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
+# ⚖️ 券商官方標準法定公式：維持率 = 總擔保品市值 / 剩餘借款本金總額
+overall_maintenance_ratio = (total_collateral_value / total_remaining_loan * 100) if total_remaining_loan > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_accrued_interest_gross
 
 # --- 頂部儀表板 ---
@@ -811,10 +869,10 @@ with tab_stress:
         target_safe_ratio = st.slider("🎯 目標安全防守維持率 (%)", min_value=140, max_value=200, value=166, step=1)
     
     simulated_collateral_val = total_collateral_value * (1 - (drop_percent / 100.0))
-    simulated_maintenance_ratio = (simulated_collateral_val / total_liability * 100) if total_liability > 0 else 0
+    simulated_maintenance_ratio = (simulated_collateral_val / total_remaining_loan * 100) if total_remaining_loan > 0 else 0
     
     req_liability = (simulated_collateral_val / (target_safe_ratio / 100.0)) if target_safe_ratio > 0 else 0
-    repay_needed = max(total_liability - req_liability, 0.0)
+    repay_needed = max(total_remaining_loan - req_liability, 0.0)
 
     sm1, sm2, sm3 = st.columns(3)
     sm1.metric("模擬後抵押品市值", f"${simulated_collateral_val:,.0f}", delta=f"-{drop_percent}%")
