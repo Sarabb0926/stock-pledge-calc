@@ -114,7 +114,7 @@ div.stButton > button.orange-btn:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 群益維持率精準校正")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 群益 1.5 年週期監控")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -402,7 +402,6 @@ def project_form_dialog(edit_item=None):
     
     col1, col2 = st.columns(2)
     with col1:
-        # 下拉提示與自訂輸入整合
         p_code_raw = str(edit_item["pledge_code"]) if is_edit else ""
         known_codes = list(STOCK_OPTIONS_MAP.keys())
         default_index = known_codes.index(p_code_raw) if p_code_raw in known_codes else 0
@@ -420,7 +419,6 @@ def project_form_dialog(edit_item=None):
         else:
             p_code = p_code_select
 
-        # 質押股數（以「股」為單位，自動換算張數）
         init_pledge_shares = int(float(edit_item["pledge_sheets"]) * 1000) if is_edit else 0
         p_shares = st.number_input("質押股數 (股，1000股=1張，無新押填0)", min_value=0, value=init_pledge_shares, step=1000, key=f"inp_shares_{dlg_id}")
         p_sheets = p_shares / 1000.0
@@ -661,6 +659,7 @@ for item in st.session_state.pledges:
 
     days_pledged = max((end_calc_date - item["pledge_date"]).days, 1)
     
+    # 累計總質借利息（毛額）與未結未繳利息
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
     total_accrued_interest_gross += accrued_interest
@@ -744,8 +743,9 @@ for item in st.session_state.pledges:
         "arbitrage": net_arbitrage
     })
 
-# ⚖️ 券商官方標準法定公式：維持率 = 總擔保品市值 / 剩餘借款本金總額
-overall_maintenance_ratio = (total_collateral_value / total_remaining_loan * 100) if total_remaining_loan > 0 else 0
+# ⚖️ 券商官方標準法定公式：維持率 = 總擔保品市值 / (剩餘借款本金 + 累計未結利息)
+total_liability = total_remaining_loan + total_interest_paid
+overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_accrued_interest_gross
 
 # --- 頂部儀表板 ---
@@ -869,10 +869,10 @@ with tab_stress:
         target_safe_ratio = st.slider("🎯 目標安全防守維持率 (%)", min_value=140, max_value=200, value=166, step=1)
     
     simulated_collateral_val = total_collateral_value * (1 - (drop_percent / 100.0))
-    simulated_maintenance_ratio = (simulated_collateral_val / total_remaining_loan * 100) if total_remaining_loan > 0 else 0
+    simulated_maintenance_ratio = (simulated_collateral_val / total_liability * 100) if total_liability > 0 else 0
     
     req_liability = (simulated_collateral_val / (target_safe_ratio / 100.0)) if target_safe_ratio > 0 else 0
-    repay_needed = max(total_remaining_loan - req_liability, 0.0)
+    repay_needed = max(total_liability - req_liability, 0.0)
 
     sm1, sm2, sm3 = st.columns(3)
     sm1.metric("模擬後抵押品市值", f"${simulated_collateral_val:,.0f}", delta=f"-{drop_percent}%")
