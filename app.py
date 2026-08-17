@@ -114,7 +114,7 @@ div.stButton > button.orange-btn:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 群益 1.5 年週期監控")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 多期還本繳息時間軸 · 券商精準維持率校準")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -301,9 +301,9 @@ def save_pledges_to_cloud(pledges_list):
     except Exception as e:
         return False, str(e)
 
-# --- 🚀 即時股價 API ---
-@st.cache_data(ttl=180)
-def get_stock_price(symbol: str) -> float:
+# --- 🚀 官方標準取價 API（精準鎖定最新收盤價與撮合價） ---
+@st.cache_data(ttl=120)
+def get_stock_price(symbol: str, use_close_price: bool = True) -> float:
     raw_code = normalize_tw_code(symbol)
     if not raw_code or raw_code == "0":
         return 0.0
@@ -329,14 +329,20 @@ def get_stock_price(symbol: str) -> float:
                 result = res_data.get("chart", {}).get("result", [])
                 if result:
                     meta = result[0].get("meta", {})
+                    
+                    # 若啟用券商官方收盤價模式，優先取得前一營業日/當日官方收盤價
+                    if use_close_price:
+                        closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                        valid_closes = [c for c in closes if c is not None and c > 0]
+                        if valid_closes:
+                            return round(float(valid_closes[-1]), 2)
+                        prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+                        if prev_close and float(prev_close) > 0:
+                            return round(float(prev_close), 2)
+                    
                     price = meta.get("regularMarketPrice")
                     if price and float(price) > 0:
                         return round(float(price), 2)
-                    
-                    closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                    valid_closes = [c for c in closes if c is not None and c > 0]
-                    if valid_closes:
-                        return round(float(valid_closes[-1]), 2)
         except Exception:
             pass
 
@@ -364,9 +370,17 @@ if "pledges" not in st.session_state:
 if "active_dialog_id" not in st.session_state:
     st.session_state.active_dialog_id = None
 
-# --- 側邊欄：自定義維持率警戒值 ---
+# --- 側邊欄：風險警戒與券商計價模式設定 ---
 with st.sidebar:
-    st.header("⚙️ 風險警戒設定")
+    st.header("⚙️ 券商計價與維持率設定")
+    price_mode = st.radio(
+        "📊 擔保品取價基準",
+        options=["官方前收盤價 (券商官方結算標準)", "盤中即時成交價"],
+        index=0,
+        help="群益與台灣各大券商在計算每日整戶維持率時，依法定標準皆採用前一營業日之收盤價。"
+    )
+    use_official_close = (price_mode == "官方前收盤價 (券商官方結算標準)")
+
     custom_warn_ratio = st.slider("⚠️ 警惕維持率警戒線 (%)", min_value=130, max_value=300, value=160, step=5)
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
@@ -639,7 +653,7 @@ for item in st.session_state.pledges:
         pledge_display_str = "無 (動用舊額度)"
         pledge_val_str = "$0"
     else:
-        p_price = get_stock_price(p_code_norm)
+        p_price = get_stock_price(p_code_norm, use_close_price=use_official_close)
         current_collateral_val = p_price * item["pledge_sheets"] * 1000
         pledge_sheets_str = format_sheets_display(item['pledge_sheets'])
         pledge_display_str = f"{p_code_norm} ({pledge_sheets_str})"
@@ -657,9 +671,9 @@ for item in st.session_state.pledges:
     else:
         end_calc_date = date.today()
 
-    days_pledged = max((end_calc_date - item["pledge_date"]).days, 1)
+    # 券商法定天數計算
+    days_pledged = max((end_calc_date - item["pledge_date"]).days, 0)
     
-    # 累計總質借利息（毛額）與未結未繳利息
     accrued_interest = orig_loan * (item["interest_rate"] / 100.0) * (days_pledged / 365.0)
     unpaid_interest = max(accrued_interest - repaid_int, 0.0)
     total_accrued_interest_gross += accrued_interest
@@ -674,7 +688,7 @@ for item in st.session_state.pledges:
         t_code_norm = normalize_tw_code(t.get("target_code", ""))
         if not t_code_norm or t_code_norm == "0":
             continue
-        t_price = get_stock_price(t_code_norm)
+        t_price = get_stock_price(t_code_norm, use_close_price=use_official_close)
         t_sheets = t.get("target_sheets", 1.0)
         c_val = t_price * t_sheets * 1000
         proj_target_val += c_val
