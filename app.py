@@ -33,7 +33,7 @@ div.stButton > button.orange-btn:hover {
 .project-card-grid {
     flex-grow: 1;
     display: grid;
-    grid-template-columns: 2.3fr 2.2fr 2fr 2.5fr 2fr;
+    grid-template-columns: 2.3fr 2fr 2fr 2.5fr 2fr;
     gap: 15px;
     align-items: center;
 }
@@ -104,17 +104,6 @@ div.stButton > button.orange-btn:hover {
     margin-top: 2px;
 }
 
-.safe-price-tag {
-    font-size: 11px;
-    color: #c62828;
-    background: #fff8f8;
-    padding: 2px 5px;
-    border-radius: 3px;
-    border: 1px dashed #ef9a9a;
-    margin-top: 3px;
-    display: inline-block;
-}
-
 @media (max-width: 900px) {
     .project-card-grid {
         grid-template-columns: 1fr;
@@ -125,7 +114,7 @@ div.stButton > button.orange-btn:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 追繳底線價格反推 · 群益維持率精準校正")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 滿期一鍵借新還舊 · 群益維持率精準校正")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -134,7 +123,6 @@ DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycb...請貼上你的�
 GSHEET_API_URL = st.secrets.get("GSHEET_API_URL", DEFAULT_API_URL)
 # ==============================================================================
 
-# 常用台股與 ETF 清單
 STOCK_OPTIONS_MAP = {
     "00919": "00919 群益台灣精選高息",
     "00878": "00878 國泰永續高股息",
@@ -394,6 +382,57 @@ with st.sidebar:
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
     st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
 
+# 🔁 一鍵借新還舊處理函式
+def execute_refinance(old_project):
+    with st.spinner("🔁 正在進行一鍵借新還舊換約結轉..."):
+        repayments_list = old_project.get("repayments", [])
+        repaid_amt = sum(r["amount"] for r in repayments_list if r.get("type") == "償還本金")
+        repaid_int = sum(r["amount"] for r in repayments_list if r.get("type") == "繳納利息")
+        remaining_loan = max(old_project["loan_amount"] - repaid_amt, 0.0)
+        
+        days_pledged = max((date.today() - old_project["pledge_date"]).days, 0)
+        accrued_interest = old_project["loan_amount"] * (old_project["interest_rate"] / 100.0) * (days_pledged / 365.0)
+        unpaid_interest = max(accrued_interest - repaid_int, 0.0)
+
+        # 1. 舊專案結清補滿還本記錄與繳息
+        if remaining_loan > 0:
+            old_project["repayments"].append({
+                "type": "償還本金",
+                "amount": remaining_loan,
+                "date": date.today()
+            })
+        if unpaid_interest > 0:
+            old_project["repayments"].append({
+                "type": "繳納利息",
+                "amount": unpaid_interest,
+                "date": date.today()
+            })
+        
+        # 2. 自動生成新一期專案
+        new_id = max([p["id"] for p in st.session_state.pledges], default=0) + 1
+        raw_name = str(old_project["project_name"])
+        base_name = raw_name.split(" (換約")[0]
+        new_name = f"{base_name} (換約新期)"
+        
+        new_project = {
+            "id": new_id,
+            "project_name": new_name,
+            "pledge_code": old_project["pledge_code"],
+            "pledge_sheets": old_project["pledge_sheets"],
+            "pledge_cost": old_project["pledge_cost"],
+            "loan_amount": remaining_loan if remaining_loan > 0 else old_project["loan_amount"],
+            "rollover_count": 0,
+            "interest_rate": old_project["interest_rate"],
+            "pledge_date": date.today(),
+            "targets": [dict(t) for t in old_project.get("targets", [])],
+            "repayments": []
+        }
+        
+        st.session_state.pledges.append(new_project)
+        save_pledges_to_cloud(st.session_state.pledges)
+        st.toast(f"✅ 專案已成功借新還舊，建立新期：{new_name}！")
+        st.rerun()
+
 # --- 彈窗表單對話盒 ---
 @st.dialog("📋 質押專案編輯器", width="large")
 def project_form_dialog(edit_item=None):
@@ -641,7 +680,7 @@ total_target_value = 0.0
 total_target_cost = 0.0
 total_dividends = 0.0
 
-project_display_data = []
+temp_calc_list = []
 
 for item in st.session_state.pledges:
     p_code_norm = normalize_tw_code(item["pledge_code"])
@@ -659,15 +698,9 @@ for item in st.session_state.pledges:
     if p_code_norm == "0" or item.get("pledge_sheets", 0) == 0:
         current_collateral_val = 0.0
         p_price = 0.0
-        pledge_display_str = "無 (動用舊額度)"
-        pledge_val_str = "$0"
-        margin_call_html = ""
     else:
         p_price = get_stock_price(p_code_norm, use_close_price=use_official_close)
         current_collateral_val = p_price * item["pledge_sheets"] * 1000
-        pledge_sheets_str = format_sheets_display(item['pledge_sheets'])
-        pledge_display_str = f"{p_code_norm} ({pledge_sheets_str})"
-        pledge_val_str = f"${current_collateral_val:,.0f} (@${p_price})"
 
     total_collateral_value += current_collateral_val
     total_remaining_loan += remaining_loan
@@ -688,25 +721,59 @@ for item in st.session_state.pledges:
     total_accrued_interest_gross += accrued_interest
     total_interest_paid += unpaid_interest
 
-    # 🛡️ 個股追繳底線價格反推試算
-    if not is_collateral_only and not is_closed and p_code_norm != "0" and item.get("pledge_sheets", 0) > 0 and p_price > 0:
-        proj_liability = remaining_loan + unpaid_interest
-        # 130% 追繳防守價
-        danger_stock_price = (proj_liability * (custom_danger_ratio / 100.0)) / (item["pledge_sheets"] * 1000.0)
-        drop_to_danger = ((danger_stock_price - p_price) / p_price) * 100.0
-        
-        # 160% 預警防守價
-        warn_stock_price = (proj_liability * (custom_warn_ratio / 100.0)) / (item["pledge_sheets"] * 1000.0)
-        drop_to_warn = ((warn_stock_price - p_price) / p_price) * 100.0
-        
-        margin_call_html = f"""
-        <div class="safe-price-tag">
-            🚨 追繳價：<b>${danger_stock_price:.2f}</b> ({drop_to_danger:.1f}%)<br>
-            ⚠️ 預警價：<b>${warn_stock_price:.2f}</b> ({drop_to_warn:.1f}%)
-        </div>
-        """
+    temp_calc_list.append({
+        "item": item,
+        "p_code_norm": p_code_norm,
+        "p_price": p_price,
+        "current_collateral_val": current_collateral_val,
+        "orig_loan": orig_loan,
+        "repaid_amt": repaid_amt,
+        "repaid_int": repaid_int,
+        "remaining_loan": remaining_loan,
+        "is_collateral_only": is_collateral_only,
+        "is_closed": is_closed,
+        "rollover": rollover,
+        "days_pledged": days_pledged,
+        "accrued_interest": accrued_interest,
+        "unpaid_interest": unpaid_interest,
+        "repayments_list": repayments_list
+    })
+
+# ⚖️ 券商官方標準法定公式：維持率 = 總擔保品市值 / (剩餘借款本金 + 累計未結利息)
+total_liability = total_remaining_loan + total_interest_paid
+overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
+
+if total_collateral_value > 0 and total_liability > 0:
+    max_drop_to_danger = max((1.0 - (total_liability * (custom_danger_ratio / 100.0)) / total_collateral_value) * 100.0, 0.0)
+else:
+    max_drop_to_danger = 0.0
+
+project_display_data = []
+
+for t_data in temp_calc_list:
+    item = t_data["item"]
+    p_code_norm = t_data["p_code_norm"]
+    p_price = t_data["p_price"]
+    current_collateral_val = t_data["current_collateral_val"]
+    orig_loan = t_data["orig_loan"]
+    repaid_amt = t_data["repaid_amt"]
+    repaid_int = t_data["repaid_int"]
+    remaining_loan = t_data["remaining_loan"]
+    is_collateral_only = t_data["is_collateral_only"]
+    is_closed = t_data["is_closed"]
+    rollover = t_data["rollover"]
+    days_pledged = t_data["days_pledged"]
+    accrued_interest = t_data["accrued_interest"]
+    unpaid_interest = t_data["unpaid_interest"]
+    repayments_list = t_data["repayments_list"]
+
+    if p_code_norm == "0" or item.get("pledge_sheets", 0) == 0:
+        pledge_display_str = "無 (動用舊額度)"
+        pledge_val_str = "$0"
     else:
-        margin_call_html = ""
+        pledge_sheets_str = format_sheets_display(item['pledge_sheets'])
+        pledge_display_str = f"{p_code_norm} ({pledge_sheets_str})"
+        pledge_val_str = f"${current_collateral_val:,.0f} (@${p_price})"
 
     proj_target_val = 0.0
     proj_target_cost = 0.0
@@ -735,24 +802,30 @@ for item in st.session_state.pledges:
     net_arbitrage = (target_unrealized_gain + proj_dividends) - accrued_interest
 
     days_to_refinance = max(540 - days_pledged, 0)
+    can_refinance = False
+    
     if is_collateral_only:
         status_html = "<span class='badge-collateral'>🛡️ 擔保品</span>"
         time_sub_html = "純擔保品 (未借款)"
     elif is_closed:
         status_html = "<span class='badge-closed'>🟢 已結清 (已換約)</span>"
         time_sub_html = f"{days_pledged}天 / {item['interest_rate']}%"
-    elif days_pledged >= 500 or (rollover >= 2 and days_pledged >= 480):
+    elif days_pledged >= 480 or rollover >= 2:
         status_html = "<span class='badge-refinance'>⚠️ 滿期提醒：需借新還舊</span>"
         time_sub_html = f"<span style='color:#c62828; font-weight:bold;'>第{days_pledged}天 (剩{days_to_refinance}天滿期)</span>"
+        can_refinance = True
     elif rollover == 1 or (repaid_int > 0 and rollover == 0):
         status_html = "<span class='badge-rollover'>🔄 展延中 #1 (第2期)</span>"
         time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
+        can_refinance = True
     elif rollover == 2:
         status_html = "<span class='badge-rollover'>🔄 展延中 #2 (末期)</span>"
         time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
+        can_refinance = True
     else:
         status_html = "<span class='badge-active'>⚡ 進行中 (首期 1/3)</span>"
         time_sub_html = f"{days_pledged}天 (距滿期剩{days_to_refinance}天)"
+        can_refinance = True
 
     timeline_items_html = []
     for r in repayments_list:
@@ -768,11 +841,11 @@ for item in st.session_state.pledges:
         "time_sub_html": time_sub_html,
         "is_collateral_only": is_collateral_only,
         "is_closed": is_closed,
+        "can_refinance": can_refinance,
         "rollover": rollover,
         "pledge": pledge_display_str,
         "cost": f"${item['pledge_cost']:,.0f}" if p_code_norm != "0" else "$0",
         "pledge_val": pledge_val_str,
-        "margin_call_html": margin_call_html,
         "orig_loan": orig_loan,
         "repaid_amt": repaid_amt,
         "repaid_int": repaid_int,
@@ -787,15 +860,12 @@ for item in st.session_state.pledges:
         "arbitrage": net_arbitrage
     })
 
-# ⚖️ 券商官方標準法定公式：維持率 = 總擔保品市值 / (剩餘借款本金 + 累計未結利息)
-total_liability = total_remaining_loan + total_interest_paid
-overall_maintenance_ratio = (total_collateral_value / total_liability * 100) if total_liability > 0 else 0
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_accrued_interest_gross
 
 # --- 頂部儀表板 ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("🏛️ 整戶總抵押品市值", f"${total_collateral_value:,.0f}")
+m1.metric("🏛️ 整戶總擔保品市值", f"${total_collateral_value:,.0f}")
 m2.metric("💳 剩餘未償借款", f"${total_remaining_loan:,.0f}", delta=f"已還本金 ${total_repaid_amount:,.0f}" if total_repaid_amount > 0 else None)
 
 is_danger = overall_maintenance_ratio < custom_danger_ratio
@@ -806,7 +876,7 @@ if is_danger:
 elif is_warn:
     ratio_delta_text = f"⚠️ 警惕區域 (<{custom_warn_ratio}%)"
 else:
-    ratio_delta_text = f"✅ 安全範圍 (>{custom_warn_ratio}%)"
+    ratio_delta_text = f"✅ 安全耐跌幅 -{max_drop_to_danger:.1f}%"
 
 with m3:
     if is_danger or is_warn:
@@ -865,7 +935,7 @@ with tab_proj:
             else:
                 int_display_html = f"<b>利息：</b><span style='color:#d9534f;'>{r['interest']}</span>"
 
-            c_card, c_btn = st.columns([11, 1.2])
+            c_card, c_btn = st.columns([10.5, 1.5])
             with c_card:
                 card_html = (
                     f'<div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">'
@@ -877,7 +947,6 @@ with tab_proj:
                     f'<div>'
                     f'<div style="font-size: 13px;"><b>質押：</b>{r["pledge"]}</div>'
                     f'<div style="font-size: 12px; color: #555; margin-top: 3px;"><b>市值：</b>{r["pledge_val"]}</div>'
-                    f'{r["margin_call_html"]}'
                     f'</div>'
                     f'<div>'
                     f'<div style="font-size: 13px;">{loan_display_html}</div>'
@@ -896,10 +965,15 @@ with tab_proj:
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
             with c_btn:
-                st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
                 if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", use_container_width=True):
                     st.session_state.active_dialog_id = r["id"]
                     st.rerun()
+                
+                # 🔁 一鍵借新還舊換約按鈕
+                if r["can_refinance"] and not r["is_closed"] and not r["is_collateral_only"]:
+                    if st.button("🔁 借新還舊", key=f"refinance_btn_{r['id']}", help="自動結算舊案，並以相同張數與金額建立新週期專案", use_container_width=True):
+                        execute_refinance(r["item_obj"])
     else:
         st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
 
