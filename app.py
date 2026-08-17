@@ -124,7 +124,7 @@ div.stButton > button.orange-btn:hover {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 滿期借新還舊換約 · 群益維持率精準校正")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 實質利差與現金流損益 · 群益維持率精準校正")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -269,7 +269,7 @@ def load_pledges_from_cloud():
     return None
 
 def save_pledges_to_cloud(pledges_list):
-    """將專案資料即時寫入 Google Sheets（逾時提高至 30 秒）"""
+    """將專案資料即時寫入 Google Sheets（逾時設定為 30 秒）"""
     if "AKfycb" not in GSHEET_API_URL:
         return False, "尚未設定 Google Sheets API 網址"
     try:
@@ -377,9 +377,9 @@ if "pledges" not in st.session_state:
 if "active_dialog_id" not in st.session_state:
     st.session_state.active_dialog_id = None
 
-# --- 側邊欄：風險警戒與券商計價模式設定 ---
+# --- 側邊欄：風險警戒、券商計價模式與現金流估算設定 ---
 with st.sidebar:
-    st.header("⚙️ 券商計價與維持率設定")
+    st.header("⚙️ 系統參數設定")
     price_mode = st.radio(
         "📊 擔保品取價基準",
         options=["官方前收盤價 (券商官方結算標準)", "盤中即時成交價"],
@@ -390,7 +390,10 @@ with st.sidebar:
 
     custom_warn_ratio = st.slider("⚠️ 警惕維持率警戒線 (%)", min_value=130, max_value=300, value=160, step=5)
     custom_danger_ratio = st.slider("🚨 追繳維持率警戒線 (%)", min_value=120, max_value=160, value=130, step=1)
-    st.caption(f"目前設定：低於 {custom_danger_ratio}% 觸發追繳紅字警告，低於 {custom_warn_ratio}% 進入預警區。")
+    
+    st.markdown("---")
+    st.header("💰 套利現金流參數")
+    est_target_yield = st.slider("🎯 轉投資預估年化殖利率 (%)", min_value=3.0, max_value=15.0, value=8.5, step=0.1, help="用以預估未來一年轉投資標的所能產生的被動現金流。")
 
 # 🔁 一鍵借新還舊處理函式
 def execute_refinance(old_project):
@@ -688,6 +691,8 @@ total_target_value = 0.0
 total_target_cost = 0.0
 total_dividends = 0.0
 
+total_annual_interest_expense = 0.0  # 預估年化利息支出
+
 temp_calc_list = []
 
 for item in st.session_state.pledges:
@@ -729,6 +734,10 @@ for item in st.session_state.pledges:
     total_accrued_interest_gross += accrued_interest
     total_interest_paid += unpaid_interest
 
+    # 預估該專案未來一年利息支出（若未結清）
+    if not is_closed and remaining_loan > 0:
+        total_annual_interest_expense += remaining_loan * (item["interest_rate"] / 100.0)
+
     temp_calc_list.append({
         "item": item,
         "p_code_norm": p_code_norm,
@@ -757,6 +766,7 @@ else:
     max_drop_to_danger = 0.0
 
 project_display_data = []
+spread_table_data = []
 
 for t_data in temp_calc_list:
     item = t_data["item"]
@@ -787,6 +797,7 @@ for t_data in temp_calc_list:
     proj_target_cost = 0.0
     proj_dividends = 0.0
     target_summary_list = []
+    target_codes_list = []
 
     for t in item["targets"]:
         t_code_norm = normalize_tw_code(t.get("target_code", ""))
@@ -801,6 +812,7 @@ for t_data in temp_calc_list:
         
         t_sheets_str = format_sheets_display(t_sheets)
         target_summary_list.append(f"{t_code_norm} ({t_sheets_str} @${t_price})")
+        target_codes_list.append(t_code_norm)
 
     total_target_value += proj_target_val
     total_target_cost += proj_target_cost
@@ -868,7 +880,32 @@ for t_data in temp_calc_list:
         "arbitrage": net_arbitrage
     })
 
+    # 現金流與利差損益表專用資料
+    spread_pct = (est_target_yield - item["interest_rate"]) if not is_collateral_only else 0.0
+    est_annual_dividend = proj_target_val * (est_target_yield / 100.0)
+    est_annual_interest = remaining_loan * (item["interest_rate"] / 100.0)
+    est_net_cashflow = est_annual_dividend - est_annual_interest
+
+    spread_table_data.append({
+        "專案名稱": str(item["project_name"]),
+        "質押標的": pledge_display_str,
+        "轉投資標的": ", ".join(target_codes_list) if target_codes_list else "無",
+        "轉投資市值": f"${proj_target_val:,.0f}",
+        "借款年利率": f"{item['interest_rate']:.2f}%",
+        "實質淨利差": f"{spread_pct:+.2f}%",
+        "預估年配息流入": f"${est_annual_dividend:,.0f}",
+        "預估年利息支出": f"${est_annual_interest:,.0f}",
+        "預估年淨現金流": f"${est_net_cashflow:,.0f}",
+        "實質總套利(含價差)": f"${net_arbitrage:,.0f}"
+    })
+
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_accrued_interest_gross
+
+# 總體現金流與利差指標計算
+est_total_annual_dividend = total_target_value * (est_target_yield / 100.0)
+est_total_annual_net_cashflow = est_total_annual_dividend - total_annual_interest_expense
+weighted_loan_rate = (total_annual_interest_expense / total_remaining_loan * 100.0) if total_remaining_loan > 0 else 0.0
+overall_net_spread = (est_target_yield - weighted_loan_rate) if total_remaining_loan > 0 else 0.0
 
 # --- 頂部儀表板 ---
 st.divider()
@@ -905,7 +942,7 @@ m5.metric("💰 實質淨套利", f"${total_net_arbitrage:,.0f}")
 st.divider()
 
 # --- 分頁系統 ---
-tab_proj, tab_stress = st.tabs(["📋 質押專案彙整與還款追蹤", "🛡️ 質押維持率壓力測試 (情境模擬)"])
+tab_proj, tab_stress, tab_cashflow = st.tabs(["📋 質押專案彙整與還款追蹤", "🛡️ 質押維持率壓力測試 (情境模擬)", "📊 實質利差與現金流損益表"])
 
 with tab_proj:
     header_col1, header_col2 = st.columns([4, 1.2])
@@ -973,13 +1010,11 @@ with tab_proj:
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
             with c_btn:
-                # 專屬對齊容器
                 st.markdown("<div class='action-col-box'>", unsafe_allow_html=True)
                 if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", help="編輯此專案內容", use_container_width=True):
                     st.session_state.active_dialog_id = r["id"]
                     st.rerun()
                 
-                # 借新還舊換約操作
                 if r["can_refinance"] and not r["is_closed"] and not r["is_collateral_only"]:
                     if st.button("🔁 換約", key=f"refinance_btn_{r['id']}", help="一鍵借新還舊：結算舊案並開啟新週期", use_container_width=True):
                         execute_refinance(r["item_obj"])
@@ -1009,3 +1044,24 @@ with tab_stress:
     sim_delta_str = "🚨 跌破追繳線！" if simulated_maintenance_ratio < custom_danger_ratio else ("⚠️ 進入警惕區" if simulated_maintenance_ratio < custom_warn_ratio else "✅ 仍屬安全")
     sm2.metric("模擬後整戶維持率", f"{simulated_maintenance_ratio:.2f}%", delta=sim_delta_str)
     sm3.metric("需補繳/還款金額 (回到目標線)", f"${repay_needed:,.0f}", help=f"讓維持率回到 {target_safe_ratio}% 所需償還的本金或補入現金。")
+
+with tab_cashflow:
+    st.subheader("📊 質押套利實質利差與被動現金流損益表")
+    st.caption("借低利質借資金轉投高息 ETF / 權值股，衡量每年的真實被動現金流入與實質利差空間。")
+
+    cf1, cf2, cf3, cf4 = st.columns(4)
+    cf1.metric("🎯 實質淨利差 (Spread)", f"{overall_net_spread:+.2f}%", help=f"轉投資預估殖利率 {est_target_yield:.2f}% 減去 加權借款利率 {weighted_loan_rate:.2f}%")
+    cf2.metric("💵 預估年化配息流入", f"${est_total_annual_dividend:,.0f}", delta=f"殖利率估算 {est_target_yield:.1f}%")
+    cf3.metric("💸 預估年化利息支出", f"${total_annual_interest_expense:,.0f}", delta=f"加權利率 {weighted_loan_rate:.2f}%")
+    
+    cf_color = "normal" if est_total_annual_net_cashflow >= 0 else "inverse"
+    cf4.metric("💰 每年淨被動現金流", f"${est_total_annual_net_cashflow:,.0f}", delta="每年淨落袋金額", delta_color=cf_color)
+
+    st.markdown("---")
+    st.markdown("##### 📋 各專案套利效益與現金流明細表")
+    
+    if spread_table_data:
+        df_spread = pd.DataFrame(spread_table_data)
+        st.dataframe(df_spread, use_container_width=True, hide_index=True)
+    else:
+        st.info("目前尚無轉投資專案資料。")
