@@ -691,7 +691,7 @@ total_target_value = 0.0
 total_target_cost = 0.0
 total_dividends = 0.0
 
-total_annual_interest_expense = 0.0  # 預估年化利息支出
+total_annual_interest_expense = 0.0
 
 temp_calc_list = []
 
@@ -734,7 +734,6 @@ for item in st.session_state.pledges:
     total_accrued_interest_gross += accrued_interest
     total_interest_paid += unpaid_interest
 
-    # 預估該專案未來一年利息支出（若未結清）
     if not is_closed and remaining_loan > 0:
         total_annual_interest_expense += remaining_loan * (item["interest_rate"] / 100.0)
 
@@ -880,7 +879,6 @@ for t_data in temp_calc_list:
         "arbitrage": net_arbitrage
     })
 
-    # 現金流與利差損益表專用資料
     spread_pct = (est_target_yield - item["interest_rate"]) if not is_collateral_only else 0.0
     est_annual_dividend = proj_target_val * (est_target_yield / 100.0)
     est_annual_interest = remaining_loan * (item["interest_rate"] / 100.0)
@@ -901,7 +899,6 @@ for t_data in temp_calc_list:
 
 total_net_arbitrage = (total_target_value - total_target_cost + total_dividends) - total_accrued_interest_gross
 
-# 總體現金流與利差指標計算
 est_total_annual_dividend = total_target_value * (est_target_yield / 100.0)
 est_total_annual_net_cashflow = est_total_annual_dividend - total_annual_interest_expense
 weighted_loan_rate = (total_annual_interest_expense / total_remaining_loan * 100.0) if total_remaining_loan > 0 else 0.0
@@ -947,7 +944,16 @@ tab_proj, tab_stress, tab_cashflow = st.tabs(["📋 質押專案彙整與還款�
 with tab_proj:
     header_col1, header_col2 = st.columns([4, 1.2])
     with header_col1:
-        st.subheader("📋 專案明細列表")
+        # 💡 原生 Tooltip 圓圈問號小圖示
+        st.subheader(
+            "📋 專案明細列表",
+            help="""【核心計算法則說明】
+1. 整戶維持率 = 總擔保品市值 / (剩餘借款本金 + 累計未結利息) × 100%
+2. 追繳臨界線 = 130%（低於觸發券商追繳通知）
+3. 累計利息 = 借款本金 × 年利率 × (借款天數 / 365)
+4. 實質淨套利 = (轉投資市值 - 成本 + 總配息) - 累計質借利息
+5. 群益最長質押 1.5 年 (540天)，滿期請按 🔁 換約一鍵借新還舊。"""
+        )
     with header_col2:
         if st.button("➕ 新增質押專案", key="btn_add_proj", help="點擊建立新的質押套利專案", use_container_width=True):
             st.session_state.active_dialog_id = "new"
