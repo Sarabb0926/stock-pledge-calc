@@ -38,13 +38,14 @@ div.stButton > button.orange-btn:hover {
     align-items: center;
 }
 
-/* 微型動作按鈕 */
-div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-    padding: 0.2rem 0.5rem !important;
-    font-size: 13px !important;
-    min-height: 32px !important;
-    line-height: 1.2 !important;
-    border-radius: 6px !important;
+/* 右側操作按鈕欄容器 */
+.action-col-box {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    height: 100%;
+    padding-top: 4px;
 }
 
 /* 狀態標籤樣式 */
@@ -123,7 +124,7 @@ div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
 """, unsafe_allow_html=True)
 
 st.title("📈 股票質押與實質套利筆記本 (個人雲端版)")
-st.caption("自動連動實時股價 · Google 雲端自動存檔 · 滿期一鍵借新還舊 · 群益維持率精準校正")
+st.caption("自動連動實時股價 · Google 雲端自動存檔 · 滿期借新還舊換約 · 群益維持率精準校正")
 
 # ==============================================================================
 # 🔗 自動從 Streamlit Secrets 讀取網址，若無設定則使用備用網址
@@ -203,7 +204,7 @@ def load_pledges_from_cloud():
     if "AKfycb" not in GSHEET_API_URL:
         return None
     try:
-        res = requests.get(GSHEET_API_URL, timeout=8)
+        res = requests.get(GSHEET_API_URL, timeout=12)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -268,7 +269,7 @@ def load_pledges_from_cloud():
     return None
 
 def save_pledges_to_cloud(pledges_list):
-    """將專案資料即時寫入 Google Sheets"""
+    """將專案資料即時寫入 Google Sheets（逾時提高至 30 秒）"""
     if "AKfycb" not in GSHEET_API_URL:
         return False, "尚未設定 Google Sheets API 網址"
     try:
@@ -302,7 +303,7 @@ def save_pledges_to_cloud(pledges_list):
                 "repayments_json": json.dumps(repayments_clean, ensure_ascii=False)
             })
         
-        res = requests.post(GSHEET_API_URL, json=flat_data, timeout=12)
+        res = requests.post(GSHEET_API_URL, json=flat_data, timeout=30)
         if res.status_code == 200:
             return True, "雲端同步成功"
         return False, f"HTTP 狀態碼: {res.status_code}"
@@ -403,7 +404,6 @@ def execute_refinance(old_project):
         accrued_interest = old_project["loan_amount"] * (old_project["interest_rate"] / 100.0) * (days_pledged / 365.0)
         unpaid_interest = max(accrued_interest - repaid_int, 0.0)
 
-        # 1. 舊專案結清補滿還本記錄與繳息
         if remaining_loan > 0:
             old_project["repayments"].append({
                 "type": "償還本金",
@@ -417,7 +417,6 @@ def execute_refinance(old_project):
                 "date": date.today()
             })
         
-        # 2. 自動生成新一期專案
         new_id = max([p["id"] for p in st.session_state.pledges], default=0) + 1
         raw_name = str(old_project["project_name"])
         base_name = raw_name.split(" (換約")[0]
@@ -944,7 +943,7 @@ with tab_proj:
             else:
                 int_display_html = f"<b>利息：</b><span style='color:#d9534f;'>{r['interest']}</span>"
 
-            c_card, c_btn = st.columns([11.2, 0.8])
+            c_card, c_btn = st.columns([10.6, 1.4])
             with c_card:
                 card_html = (
                     f'<div class="project-card-grid" style="background-color:#ffffff; border-radius:8px; padding:14px 18px; border:1px solid #e0e0e0; box-shadow:0 2px 5px rgba(0,0,0,0.03);">'
@@ -974,16 +973,17 @@ with tab_proj:
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
             with c_btn:
-                st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
-                if st.button("✏️", key=f"edit_btn_{r['id']}", help="編輯專案內容", use_container_width=True):
+                # 專屬對齊容器
+                st.markdown("<div class='action-col-box'>", unsafe_allow_html=True)
+                if st.button("✏️ 編輯", key=f"edit_btn_{r['id']}", help="編輯此專案內容", use_container_width=True):
                     st.session_state.active_dialog_id = r["id"]
                     st.rerun()
                 
-                # 🔁 一鍵借新還舊小圖示按鈕
+                # 借新還舊換約操作
                 if r["can_refinance"] and not r["is_closed"] and not r["is_collateral_only"]:
-                    st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
-                    if st.button("🔁", key=f"refinance_btn_{r['id']}", help="借新還舊（換約新期）", use_container_width=True):
+                    if st.button("🔁 換約", key=f"refinance_btn_{r['id']}", help="一鍵借新還舊：結算舊案並開啟新週期", use_container_width=True):
                         execute_refinance(r["item_obj"])
+                st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.info("目前尚無專案，請點擊右上角「➕ 新增質押專案」按鈕建立第一筆資料！")
 
