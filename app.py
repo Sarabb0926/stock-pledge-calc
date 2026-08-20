@@ -200,11 +200,11 @@ def parse_sheet_date(date_val) -> date:
             return date.today()
 
 def load_pledges_from_cloud():
-    """從 Google Sheets 讀取專案資料"""
+    """從 Google Sheets 讀取專案資料（延長連線時間至 20 秒）"""
     if "AKfycb" not in GSHEET_API_URL:
         return None
     try:
-        res = requests.get(GSHEET_API_URL, timeout=12)
+        res = requests.get(GSHEET_API_URL, timeout=20)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -269,7 +269,7 @@ def load_pledges_from_cloud():
     return None
 
 def save_pledges_to_cloud(pledges_list):
-    """將專案資料即時寫入 Google Sheets（逾時設定為 30 秒）"""
+    """將專案資料即時寫入 Google Sheets（補齊 interest_rate 欄位，逾時 30 秒）"""
     if "AKfycb" not in GSHEET_API_URL:
         return False, "尚未設定 Google Sheets API 網址"
     try:
@@ -295,6 +295,7 @@ def save_pledges_to_cloud(pledges_list):
                 "pledge_sheets": float(p["pledge_sheets"]),
                 "pledge_cost": float(p["pledge_cost"]),
                 "loan_amount": float(p["loan_amount"]),
+                "interest_rate": float(p.get("interest_rate", 2.30)),  # 🛠️ 補齊利率欄位寫入！
                 "repaid_amount": total_repaid_p,
                 "repaid_interest": total_repaid_i,
                 "rollover_count": int(p.get("rollover_count", 0)),
@@ -377,7 +378,7 @@ if "pledges" not in st.session_state:
 if "active_dialog_id" not in st.session_state:
     st.session_state.active_dialog_id = None
 
-# --- 側邊欄：風險警戒、券商計價模式與現金流估算設定 ---
+# --- 側邊欄：風險警戒、券商計價模式與手動同步 ---
 with st.sidebar:
     st.header("⚙️ 系統參數設定")
     price_mode = st.radio(
@@ -394,6 +395,17 @@ with st.sidebar:
     st.markdown("---")
     st.header("💰 套利現金流參數")
     est_target_yield = st.slider("🎯 轉投資預估年化殖利率 (%)", min_value=3.0, max_value=15.0, value=8.5, step=0.1, help="用以預估未來一年轉投資標的所能產生的被動現金流。")
+
+    st.markdown("---")
+    if st.button("🔄 從雲端重新整理資料", use_container_width=True, help="換裝置或連線逾時時，強制向 Google Sheets 重新抓取資料"):
+        with st.spinner("正在連線 Google Sheets..."):
+            fresh_data = load_pledges_from_cloud()
+            if fresh_data:
+                st.session_state.pledges = fresh_data
+                st.toast("✅ 已成功從 Google 雲端載入最新資料！")
+                st.rerun()
+            else:
+                st.warning("⚠️ 讀取失敗，請確認網路或 Google 試算表權限。")
 
 # 🔁 一鍵借新還舊處理函式
 def execute_refinance(old_project):
@@ -944,7 +956,6 @@ tab_proj, tab_stress, tab_cashflow = st.tabs(["📋 質押專案彙整與還款�
 with tab_proj:
     header_col1, header_col2 = st.columns([4, 1.2])
     with header_col1:
-        # 💡 原生 Tooltip 圓圈問號小圖示
         st.subheader(
             "📋 專案明細列表",
             help="""【核心計算法則說明】
